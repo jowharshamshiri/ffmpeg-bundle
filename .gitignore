@@ -1,0 +1,16 @@
+# ffmpeg sources fetched on demand by scripts/build-ffmpeg.sh.
+# Each source tree is hundreds of MB; never commit.
+sources/
+build/
+
+# Cargo build outputs for this crate's compile (not the staged dist/).
+target/
+
+# pdfcartridge commits its dist/ so downstream cargo builds don't
+# require running the build script. Mirror that here: keep dist/ out
+# of .gitignore so the staged static archives + headers ARE committed
+# and `cargo build` of videocartridge works on a fresh clone.
+#
+# To rebuild from source (e.g. to bump ffmpeg-version.txt or change
+# the configure flags), run scripts/build-ffmpeg.sh and commit the
+# regenerated dist/.
