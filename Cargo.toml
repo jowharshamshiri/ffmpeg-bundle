@@ -1,26 +1,16 @@
-[package]
-name = "ffmpeg-bundle"
-version = "0.1.0"
-edition = "2021"
-description = "Embedded LGPL ffmpeg static archives + minimal Rust FFI shim. Mirrors pdfium-render-bundled."
-license = "LGPL-2.1-or-later"
-publish = false
+[build-dependencies]
+cc = "1"
 
-# This crate exposes hand-written extern "C" declarations for the
-# tiny subset of ffmpeg that downstream cartridges actually call. We
-# deliberately do NOT use `bindgen`: the API surface is small and
-# stable, and pulling bindgen+libclang into every dependent crate's
-# build is heavier than maintaining ~150 lines of FFI by hand.
+[dependencies]
 
 [lib]
 name = "ffmpeg_embed"
 path = "src/lib.rs"
 
-# We declare no `links = "..."` here: the static archives are emitted
-# by build.rs as `cargo:rustc-link-lib=static=...` directives, and we
-# want no version-locked global naming.
-
-[dependencies]
-
-[build-dependencies]
-cc = "1"
+[package]
+description = "Embedded LGPL ffmpeg static archives + minimal Rust FFI shim. Mirrors pdfium-render-bundled."
+edition = "2021"
+license = "LGPL-2.1-or-later"
+name = "ffmpeg-bundle"
+publish = false
+version = "0.1.156"
