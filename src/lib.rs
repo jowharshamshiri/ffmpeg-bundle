@@ -386,7 +386,7 @@ mod tests {
     /// invariant, the call sites would silently corrupt frame-rate
     /// math; this test pins it down.
     #[test]
-    fn avrational_is_two_ints_no_padding() {
+    fn test999_avrational_is_two_ints_no_padding() {
         assert_eq!(std::mem::size_of::<AVRational>(), 2 * std::mem::size_of::<c_int>());
         assert_eq!(std::mem::align_of::<AVRational>(), std::mem::align_of::<c_int>());
     }
