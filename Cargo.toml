@@ -4,7 +4,7 @@ cc = "1"
 [dependencies]
 
 [lib]
-name = "ffmpeg_embed"
+name = "ffmpeg_bundle"
 path = "src/lib.rs"
 
 [package]
