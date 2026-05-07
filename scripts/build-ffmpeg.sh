@@ -109,22 +109,31 @@ fi
 # components, no programs, no docs. This keeps the static archives
 # small and the patent/license posture clean (LGPL only).
 
-# Decoders: cover the codecs you actually find in real-world video
-# files. h264 + hevc are mandatory. vp8/vp9/av1 cover web video and
-# modern containers. mpeg4 covers older MOV/MP4. mjpeg appears in
-# some AVIs.
-DECODERS=(h264 hevc vp8 vp9 av1 mpeg4 mjpeg)
-# Encoders: NONE. We hand decoded RGBA frames to the Rust `image`
-# crate for PNG/JPEG emission. Skipping ffmpeg's encoders saves ~1 MB
-# and removes any libpng/libjpeg dependency from the link line.
-ENCODERS=()
-# Demuxers: containers we must read.
-DEMUXERS=(mov matroska avi mpegts flv)
-# Muxers: NONE. We don't write container files; the cartridge emits
-# individual decoded frames as standalone images.
-MUXERS=()
+# Decoders. Video: codecs you actually find in real-world video
+# files (h264/hevc mandatory; vp8/vp9/av1 for web; mpeg4 for older
+# MOV/MP4; mjpeg appears in some AVIs). Audio: aac (MOV/MP4 audio
+# track), opus (WebM/MKV audio), flac/pcm/mp3 to support audio
+# transcoding pipelines (audiocartridge).
+DECODERS=(h264 hevc vp8 vp9 av1 mpeg4 mjpeg
+          aac opus flac mp3 pcm_s16le pcm_s16be pcm_s24le pcm_s32le pcm_f32le vorbis alac)
+# Encoders. flac for audiocartridge convert-audio outputs; aac for
+# m4a remuxing fallback (the remux path doesn't transcode, but
+# having the encoder makes the codec known to the muxer); pcm_s16le
+# as the universal intermediate for WAV outputs.
+ENCODERS=(flac aac pcm_s16le pcm_s24le pcm_f32le)
+# Demuxers: containers we must read. mov covers .mov/.mp4/.m4a
+# (they share the ISOBMFF demuxer). matroska covers .mkv/.webm.
+# wav/flac/mp3/ogg/aac/aiff cover the standalone audio formats
+# audiocartridge transcodes between.
+DEMUXERS=(mov matroska avi mpegts flv
+          wav flac mp3 ogg aac aiff)
+# Muxers. ipod is ffmpeg's name for the M4A muxer (audio-only MP4
+# variant); flac, wav, ogg, aac for the transcoded outputs the
+# audiocartridge exposes.
+MUXERS=(ipod mp4 flac wav ogg aac)
 # Parsers: keyframe boundary parsing for the codecs above.
-PARSERS=(h264 hevc vp8 vp9 av1 mpeg4video mjpeg)
+PARSERS=(h264 hevc vp8 vp9 av1 mpeg4video mjpeg
+         aac opus flac mpegaudio)
 # Filters: NONE. Our fps selection and resizing happens in Rust on
 # already-decoded frames (sw scale is invoked directly via swscale's
 # C API, not through libavfilter). Dropping libavfilter is the
@@ -133,7 +142,7 @@ PARSERS=(h264 hevc vp8 vp9 av1 mpeg4video mjpeg)
 FILTERS=()
 # Bitstream filters: needed to repackage encoded frames between
 # extradata-bearing containers and our decoders.
-BSFS=(h264_mp4toannexb hevc_mp4toannexb)
+BSFS=(h264_mp4toannexb hevc_mp4toannexb aac_adtstoasc)
 # Protocols: only file: — we operate on bytes from stdin or a path,
 # never the network. `pipe` lets us feed bytes via /dev/stdin.
 PROTOCOLS=(file pipe)

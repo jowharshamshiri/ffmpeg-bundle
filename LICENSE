@@ -1,0 +1,54 @@
+                  GNU LESSER GENERAL PUBLIC LICENSE
+                       Version 2.1, February 1999
+
+This component (ffmpeg-bundle) packages the FFmpeg static archives
+(libavformat, libavcodec, libavutil, libswscale, libswresample) and
+exposes them to Rust callers via a thin FFI shim plus a small C
+accessor file. Because it statically incorporates the FFmpeg LGPL
+libraries, the combined work is distributed under the terms of the
+GNU Lesser General Public License, version 2.1 or later
+(LGPL-2.1-or-later).
+
+The full text of the LGPL-2.1 license is available at:
+
+  https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt
+
+and is reproduced verbatim in
+`sources/ffmpeg-n7.1/COPYING.LGPLv2.1` inside this directory.
+
+What this means for downstream consumers:
+
+  - You may use, modify, and redistribute this crate under the
+    LGPL-2.1.
+  - If you statically link this crate into another binary, the
+    LGPL-2.1's source-availability obligation applies — you must
+    provide a way for recipients of the binary to obtain the
+    corresponding FFmpeg source. The FFmpeg source we build against
+    is already vendored at `sources/ffmpeg-n7.1/` and the build
+    recipe at `scripts/build-ffmpeg.sh` produces the linked
+    archives bit-for-bit; satisfying §6 of the LGPL is therefore
+    automatic for anyone who has access to this repository.
+  - Dynamic linking against the produced static archives is not
+    materially different from static linking for licensing purposes
+    — both routes preserve LGPL-2.1's terms on the FFmpeg portion.
+
+The Rust FFI shim (`src/lib.rs`, `src/accessors.c`, `build.rs`)
+is original code authored as part of this crate and is licensed
+under LGPL-2.1-or-later for compositional clarity — though,
+considered in isolation, it is short and uninteresting and could
+just as easily have been MIT.
+
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU Lesser General Public License
+as published by the Free Software Foundation; either version 2.1 of
+the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+Lesser General Public License for more details.
+
+You should have received a copy of the GNU Lesser General Public
+License along with this library; if not, write to the Free Software
+Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
+02110-1301 USA.

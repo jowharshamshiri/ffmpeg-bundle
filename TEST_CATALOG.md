@@ -16,7 +16,7 @@ This catalog lists all tests in the Rust codebase.
 
 | Test # | Function Name | Description | File |
 |--------|---------------|-------------|------|
-| test999 | `test999_avrational_is_two_ints_no_padding` | / AVRational must be POD-compatible with ffmpeg's struct (two / `int` fields, no padding) so we can pass it by value across / the FFI boundary. If a future Rust ABI change ever broke this / invariant, the call sites would silently corrupt frame-rate / math; this test pins it down. | src/lib.rs:389 |
+| test999 | `test999_avrational_is_two_ints_no_padding` | / AVRational must be POD-compatible with ffmpeg's struct (two / `int` fields, no padding) so we can pass it by value across / the FFI boundary. If a future Rust ABI change ever broke this / invariant, the call sites would silently corrupt frame-rate / math; this test pins it down. | src/lib.rs:562 |
 ---
 
 *Generated from Rust source tree*

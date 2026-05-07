@@ -26,6 +26,21 @@
 
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 
+/// Stable hash of the bundled ffmpeg static archives this crate was
+/// linked against. Set by `build.rs` from the (path, size, mtime)
+/// of every `dist/lib/*.a` file at build time. Two purposes:
+///
+///  1. Diagnostic — surfaceable from any tool that links this crate,
+///     so `dx` can report which archive set is in a given binary.
+///  2. Cargo-incremental glue — embedding the fingerprint as a
+///     `pub const` forces cargo to rerun rustc whenever the
+///     archives change. The recompiled `.rlib` then has different
+///     content, which makes cargo invalidate every downstream
+///     binary's incremental cache and re-link it. Without this,
+///     replacing `dist/lib/*.a` in place would not propagate to
+///     already-built cartridge binaries.
+pub const FFMPEG_BUNDLE_FINGERPRINT: &str = env!("FFMPEG_BUNDLE_FINGERPRINT");
+
 // ---------------------------------------------------------------------------
 // Opaque types
 // ---------------------------------------------------------------------------
@@ -62,6 +77,18 @@ pub struct AVFrame { _private: [u8; 0] }
 
 #[repr(C)]
 pub struct AVDictionary { _private: [u8; 0] }
+
+#[repr(C)]
+pub struct AVOutputFormat { _private: [u8; 0] }
+
+#[repr(C)]
+pub struct AVIOContext { _private: [u8; 0] }
+
+#[repr(C)]
+pub struct SwrContext { _private: [u8; 0] }
+
+#[repr(C)]
+pub struct AVAudioFifo { _private: [u8; 0] }
 
 #[repr(C)]
 pub struct SwsContext { _private: [u8; 0] }
@@ -119,6 +146,7 @@ extern "C" {
     fn ffmpeg_embed_averror_eagain() -> c_int;
     fn ffmpeg_embed_averror_einval() -> c_int;
     fn ffmpeg_embed_averror_enomem() -> c_int;
+    fn ffmpeg_embed_averror_input_changed() -> c_int;
 }
 
 /// Platform-correct `AVERROR(EAGAIN)`. Use this in send/receive loops
@@ -138,6 +166,16 @@ pub fn averror_einval() -> c_int {
 #[inline]
 pub fn averror_enomem() -> c_int {
     unsafe { ffmpeg_embed_averror_enomem() }
+}
+
+/// `AVERROR_INPUT_CHANGED`. swresample returns this from
+/// `swr_convert_frame` when the input frame's sample-format / rate /
+/// channel-layout differs from what the resampler was last
+/// configured for. Caller responds by reconfiguring swr from the
+/// new input frame and retrying the convert.
+#[inline]
+pub fn averror_input_changed() -> c_int {
+    unsafe { ffmpeg_embed_averror_input_changed() }
 }
 
 /// Map an ffmpeg negative return code into a human-readable string
@@ -210,13 +248,13 @@ extern "C" {
     /// rather than letting libavformat open a path itself.
     pub fn ffmpeg_embed_format_set_pb(
         ctx: *mut AVFormatContext,
-        pb: *mut std::os::raw::c_void,
+        pb: *mut AVIOContext,
     );
 
     /// Read the buffer pointer from an AVIOContext. Used so the Rust
     /// drop glue can free the buffer with `av_free` after calling
     /// `avio_context_free` (which does not free the buffer itself).
-    pub fn ffmpeg_embed_avio_buffer(ctx: *mut std::os::raw::c_void) -> *mut u8;
+    pub fn ffmpeg_embed_avio_buffer(ctx: *mut AVIOContext) -> *mut u8;
 }
 
 // ---------------------------------------------------------------------------
@@ -365,6 +403,222 @@ extern "C" {
     pub fn ffmpeg_embed_frame_pts(frame: *const AVFrame) -> i64;
     pub fn ffmpeg_embed_frame_data(frame: *const AVFrame, plane: c_int) -> *mut u8;
     pub fn ffmpeg_embed_frame_linesize(frame: *const AVFrame, plane: c_int) -> c_int;
+
+    // Audio-side codec parameters & context accessors (used for
+    // remux/transcode pipelines).
+    pub fn ffmpeg_embed_codecpar_sample_rate(par: *const AVCodecParameters) -> c_int;
+    pub fn ffmpeg_embed_codecpar_channels(par: *const AVCodecParameters) -> c_int;
+    pub fn ffmpeg_embed_codecpar_channel_layout(par: *const AVCodecParameters) -> u64;
+    pub fn ffmpeg_embed_codecpar_format(par: *const AVCodecParameters) -> c_int;
+    pub fn ffmpeg_embed_codecpar_frame_size(par: *const AVCodecParameters) -> c_int;
+    pub fn ffmpeg_embed_codecpar_bit_rate(par: *const AVCodecParameters) -> c_int;
+    pub fn ffmpeg_embed_codecpar_set_codec_id(par: *mut AVCodecParameters, codec_id: c_int);
+    pub fn ffmpeg_embed_codecpar_set_codec_type(par: *mut AVCodecParameters, codec_type: c_int);
+
+    pub fn ffmpeg_embed_codecctx_set_sample_rate(ctx: *mut AVCodecContext, rate: c_int);
+    pub fn ffmpeg_embed_codecctx_sample_rate(ctx: *const AVCodecContext) -> c_int;
+    pub fn ffmpeg_embed_codecctx_frame_size(ctx: *const AVCodecContext) -> c_int;
+    pub fn ffmpeg_embed_codecctx_set_sample_fmt(ctx: *mut AVCodecContext, fmt: c_int);
+    pub fn ffmpeg_embed_codecctx_sample_fmt(ctx: *const AVCodecContext) -> c_int;
+    pub fn ffmpeg_embed_codecctx_set_bit_rate(ctx: *mut AVCodecContext, bit_rate: i64);
+    pub fn ffmpeg_embed_codecctx_set_bits_per_raw_sample(ctx: *mut AVCodecContext, bits: c_int);
+
+    /// Configure a SwrContext from a pair of AVFrames (input shape +
+    /// output shape) and initialise it. Sidesteps `swr_config_frame`'s
+    /// broken first-call behaviour by copying each frame's
+    /// `ch_layout` verbatim — `av_channel_layout_compare` treats
+    /// `UNSPEC` and `NATIVE` as non-equal even with matching counts,
+    /// so swr's stored layout must be byte-identical to what the
+    /// decoder produces. Returns 0 / negative AVERROR.
+    pub fn ffmpeg_embed_swr_setup(
+        swr: *mut SwrContext,
+        in_frame: *const AVFrame,
+        out_frame: *const AVFrame,
+    ) -> c_int;
+
+    /// Promote an `AV_CHANNEL_ORDER_UNSPEC` frame ch_layout to the
+    /// canonical native-order layout for its channel count. No-op
+    /// if the frame is already in a specified order. Caller must
+    /// guarantee the frame is mutable (no concurrent readers).
+    /// Returns 0 / negative AVERROR.
+    pub fn ffmpeg_embed_frame_normalize_ch_layout(frame: *mut AVFrame) -> c_int;
+    pub fn ffmpeg_embed_codecctx_set_time_base(ctx: *mut AVCodecContext, tb: AVRational);
+    pub fn ffmpeg_embed_codecctx_time_base(ctx: *const AVCodecContext) -> AVRational;
+    pub fn ffmpeg_embed_codecctx_set_default_ch_layout(ctx: *mut AVCodecContext, channels: c_int)
+        -> c_int;
+    pub fn ffmpeg_embed_codecctx_channels(ctx: *const AVCodecContext) -> c_int;
+
+    pub fn ffmpeg_embed_stream_set_time_base(stream: *mut AVStream, tb: AVRational);
+    pub fn ffmpeg_embed_packet_set_stream_index(pkt: *mut AVPacket, index: c_int);
+
+    pub fn ffmpeg_embed_format_oformat(ctx: *const AVFormatContext) -> *const AVOutputFormat;
+    pub fn ffmpeg_embed_oformat_flags(f: *const AVOutputFormat) -> c_uint;
+
+    pub fn ffmpeg_embed_avio_open_dyn_buf(s: *mut *mut AVIOContext) -> c_int;
+    pub fn ffmpeg_embed_avio_close_dyn_buf(s: *mut AVIOContext, pbuffer: *mut *mut u8) -> c_int;
+
+    pub fn ffmpeg_embed_frame_set_nb_samples(frame: *mut AVFrame, n: c_int);
+    pub fn ffmpeg_embed_frame_nb_samples(frame: *const AVFrame) -> c_int;
+    pub fn ffmpeg_embed_frame_set_format(frame: *mut AVFrame, fmt: c_int);
+    pub fn ffmpeg_embed_frame_set_sample_rate(frame: *mut AVFrame, rate: c_int);
+    pub fn ffmpeg_embed_frame_sample_rate(frame: *const AVFrame) -> c_int;
+    pub fn ffmpeg_embed_frame_set_default_ch_layout(frame: *mut AVFrame, channels: c_int) -> c_int;
+    pub fn ffmpeg_embed_frame_channels(frame: *const AVFrame) -> c_int;
+}
+
+// ---------------------------------------------------------------------------
+// libavformat — muxing / output side
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    /// Allocate an output `AVFormatContext` for the named format.
+    /// `format_name` is e.g. "mp4", "ipod" (M4A), "flac". Pass NULL
+    /// for `oformat` to let avformat infer from `format_name` /
+    /// `filename`.
+    pub fn avformat_alloc_output_context2(
+        ctx: *mut *mut AVFormatContext,
+        oformat: *const AVOutputFormat,
+        format_name: *const c_char,
+        filename: *const c_char,
+    ) -> c_int;
+
+    /// Free an output AVFormatContext. The caller is responsible for
+    /// closing/freeing the AVIOContext attached via `pb`.
+    pub fn avformat_free_context(ctx: *mut AVFormatContext);
+
+    /// Add a new stream to the output context. `codec` may be NULL —
+    /// the caller fills `codecpar` afterwards via
+    /// `avcodec_parameters_copy`.
+    pub fn avformat_new_stream(
+        ctx: *mut AVFormatContext,
+        codec: *const AVCodec,
+    ) -> *mut AVStream;
+
+    /// Write the file header and metadata. Must be called before any
+    /// `av_interleaved_write_frame`.
+    pub fn avformat_write_header(
+        ctx: *mut AVFormatContext,
+        options: *mut *mut AVDictionary,
+    ) -> c_int;
+
+    /// Write one packet to the output. Takes ownership of the
+    /// packet's contents (libavformat may call `av_packet_unref`).
+    pub fn av_interleaved_write_frame(
+        ctx: *mut AVFormatContext,
+        pkt: *mut AVPacket,
+    ) -> c_int;
+
+    /// Write the trailer, finalising the container.
+    pub fn av_write_trailer(ctx: *mut AVFormatContext) -> c_int;
+}
+
+// ---------------------------------------------------------------------------
+// libavcodec — encoder + parameter copy + timestamp rescaling
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    /// Find an encoder by codec id (e.g. AV_CODEC_ID_FLAC).
+    pub fn avcodec_find_encoder(id: c_int) -> *const AVCodec;
+
+    /// Find an encoder by name, e.g. "flac". Useful when the build
+    /// has multiple encoders for the same codec id.
+    pub fn avcodec_find_encoder_by_name(name: *const c_char) -> *const AVCodec;
+
+    /// Copy codec parameters from one stream to another. Used during
+    /// remux to clone the input's codec params onto the output stream
+    /// so the muxer knows the codec without re-encoding.
+    pub fn avcodec_parameters_copy(
+        dst: *mut AVCodecParameters,
+        src: *const AVCodecParameters,
+    ) -> c_int;
+
+    /// Copy parameters from a codec context onto codec parameters
+    /// (used to populate the output stream's `codecpar` from the
+    /// encoder context).
+    pub fn avcodec_parameters_from_context(
+        par: *mut AVCodecParameters,
+        ctx: *const AVCodecContext,
+    ) -> c_int;
+
+    /// Encode-side counterpart of `avcodec_send_packet` /
+    /// `avcodec_receive_frame`.
+    pub fn avcodec_send_frame(ctx: *mut AVCodecContext, frame: *const AVFrame) -> c_int;
+    pub fn avcodec_receive_packet(ctx: *mut AVCodecContext, pkt: *mut AVPacket) -> c_int;
+
+    /// Rescale a packet's pts/dts from one timebase to another.
+    pub fn av_packet_rescale_ts(pkt: *mut AVPacket, src_tb: AVRational, dst_tb: AVRational);
+
+    /// Allocate the data buffers for an audio AVFrame using the
+    /// `format`, `nb_samples`, `sample_rate`, and `ch_layout` fields
+    /// already set on the frame.
+    pub fn av_frame_get_buffer(frame: *mut AVFrame, align: c_int) -> c_int;
+
+    /// Make the frame writable (allocates a fresh buffer if the
+    /// existing one is shared). Required before mutating sample
+    /// data after a previous use.
+    pub fn av_frame_make_writable(frame: *mut AVFrame) -> c_int;
+}
+
+// ---------------------------------------------------------------------------
+// libswresample — sample-format / rate / layout conversion
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    pub fn swr_alloc() -> *mut SwrContext;
+    pub fn swr_free(ctx: *mut *mut SwrContext);
+    pub fn swr_init(ctx: *mut SwrContext) -> c_int;
+    pub fn swr_close(ctx: *mut SwrContext);
+    pub fn swr_is_initialized(ctx: *mut SwrContext) -> c_int;
+
+    /// Read configuration from input/output AVFrames (preferred over
+    /// the deprecated `swr_alloc_set_opts*` family for ffmpeg ≥ 5.1).
+    pub fn swr_config_frame(
+        ctx: *mut SwrContext,
+        out: *const AVFrame,
+        in_: *const AVFrame,
+    ) -> c_int;
+
+    /// Convert one input frame's worth of samples into `out`. Either
+    /// of `in_` / `out` may be NULL to flush.
+    pub fn swr_convert_frame(
+        ctx: *mut SwrContext,
+        out: *mut AVFrame,
+        in_: *const AVFrame,
+    ) -> c_int;
+
+    /// Returns the number of samples buffered inside swr awaiting
+    /// output. Used to decide when to flush after the input EOF.
+    pub fn swr_get_delay(ctx: *mut SwrContext, base: i64) -> i64;
+}
+
+// ---------------------------------------------------------------------------
+// libavutil — AVAudioFifo
+// ---------------------------------------------------------------------------
+//
+// FIFO between swresample's variable-sized output and a fixed-frame-
+// size encoder (FLAC). Without this, the encoder's first undersized
+// frame trips its `last_audio_frame` flag and every subsequent send
+// returns EINVAL ("frame_size was not respected for a non-last frame").
+
+extern "C" {
+    pub fn av_audio_fifo_alloc(
+        sample_fmt: c_int,
+        channels: c_int,
+        nb_samples: c_int,
+    ) -> *mut AVAudioFifo;
+    pub fn av_audio_fifo_free(af: *mut AVAudioFifo);
+    pub fn av_audio_fifo_realloc(af: *mut AVAudioFifo, nb_samples: c_int) -> c_int;
+    pub fn av_audio_fifo_write(
+        af: *mut AVAudioFifo,
+        data: *const *mut c_void,
+        nb_samples: c_int,
+    ) -> c_int;
+    pub fn av_audio_fifo_read(
+        af: *mut AVAudioFifo,
+        data: *const *mut c_void,
+        nb_samples: c_int,
+    ) -> c_int;
+    pub fn av_audio_fifo_size(af: *const AVAudioFifo) -> c_int;
 }
 
 // ---------------------------------------------------------------------------

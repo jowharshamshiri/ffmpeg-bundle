@@ -9,6 +9,8 @@
 //! script has not been run, this build fails fast with a clear
 //! message — no fallback, no silent partial link.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
 fn main() {
@@ -23,6 +25,19 @@ fn main() {
         "libswresample.a",
     ];
 
+    // Fingerprint the static archives by hashing (path, mtime, size)
+    // for each one. Emitting it as a `cargo:rustc-env=` makes cargo
+    // re-run rustc on this crate every time the archives change,
+    // which in turn forces every downstream binary to relink against
+    // the fresh `.a` content. Without this, replacing the archives
+    // in place leaves cargo with stale incremental state and ships
+    // binaries linked to whatever ffmpeg config existed at first
+    // build (e.g. video-only decoders), even though the archives
+    // on disk now contain the audio decoders/encoders the new code
+    // calls into. Watching `dist/lib` as a directory is unreliable
+    // because cargo's directory-mtime check varies by filesystem;
+    // a per-file (mtime, size) hash is deterministic.
+    let mut fingerprint = DefaultHasher::new();
     for archive in archives {
         let path = dist_lib.join(archive);
         if !path.is_file() {
@@ -34,10 +49,43 @@ fn main() {
                 path
             );
         }
+        let meta = std::fs::metadata(&path).unwrap_or_else(|e| {
+            panic!(
+                "ffmpeg-embed: cannot stat {:?}: {} — required for fingerprinting",
+                path, e
+            );
+        });
+        archive.hash(&mut fingerprint);
+        meta.len().hash(&mut fingerprint);
+        if let Ok(mtime) = meta.modified() {
+            // Hash the SystemTime; its Debug shape is stable enough
+            // for hashing across runs on the same machine.
+            format!("{:?}", mtime).hash(&mut fingerprint);
+        }
+        // Per-file rerun-if-changed. Cargo watches each file for
+        // mtime/content changes — far more reliable than watching
+        // the parent directory.
+        println!("cargo:rerun-if-changed={}", path.to_string_lossy());
     }
 
-    // Re-run if any of the archives changes on disk.
-    println!("cargo:rerun-if-changed=dist/lib");
+    // Fold the C accessors source into the fingerprint too. Editing
+    // accessors.c (without changing any `.a`) recompiles the shim
+    // object via `cc::Build` below, but downstream cartridge bins
+    // would otherwise reuse their cached link of the prior shim
+    // object — leaving them missing any newly-added accessor symbol.
+    // Hashing accessors.c into the env-baked fingerprint guarantees
+    // the rlib's content changes, which forces every dependent
+    // binary to relink against the freshly-compiled accessors object.
+    let accessors_path = manifest_dir.join("src").join("accessors.c");
+    if let Ok(bytes) = std::fs::read(&accessors_path) {
+        bytes.hash(&mut fingerprint);
+    }
+
+    println!(
+        "cargo:rustc-env=FFMPEG_BUNDLE_FINGERPRINT={:016x}",
+        fingerprint.finish()
+    );
+
     println!("cargo:rerun-if-changed=dist/link_flags.txt");
     println!("cargo:rerun-if-changed=src/accessors.c");
     println!("cargo:rerun-if-changed=src/lib.rs");
