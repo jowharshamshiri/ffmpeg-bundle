@@ -14,3 +14,4 @@ target/
 # To rebuild from source (e.g. to bump ffmpeg-version.txt or change
 # the configure flags), run scripts/build-ffmpeg.sh and commit the
 # regenerated dist/.
+dist/
