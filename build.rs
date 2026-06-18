@@ -55,6 +55,17 @@ fn main() {
                 path, e
             );
         });
+
+        // Platform check. The archives committed to the repo can be
+        // for the wrong OS — e.g. a Linux build of ffmpeg-bundle
+        // committed by accident — and the link will fail far down
+        // the build with the opaque
+        // "archive member 'aacdec.o' not a mach-o file" error.
+        // Detect that here by reading the file once and looking for
+        // ELF or mach-o magic bytes. On the wrong OS we panic with a
+        // message that says exactly what to do.
+        verify_archive_platform(&path);
+
         archive.hash(&mut fingerprint);
         meta.len().hash(&mut fingerprint);
         if let Ok(mtime) = meta.modified() {
@@ -150,5 +161,68 @@ fn main() {
     // setups where dist/ is staged elsewhere.
     if let Ok(extra) = std::env::var("FFMPEG_EMBED_LIB_PATH") {
         println!("cargo:rustc-link-search=native={}", extra);
+    }
+}
+
+/// Verify that a static archive's object members match the host
+/// platform. Reads the file once and scans for known object-file magic
+/// markers — ELF (`\x7fELF`) and mach-o (the four canonical mach-o
+/// magic words plus the fat `\xCA\xFE\xBA\xBE`/`\xCA\xFE\xBA\xBF`
+/// variants). On a mismatch — e.g. a Linux ELF archive landing in a
+/// macOS build — panic with the rebuild instruction. Without this
+/// check the link fails much later with the cryptic clang error
+/// "archive member 'X.o' not a mach-o file".
+fn verify_archive_platform(path: &std::path::Path) {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => panic!(
+            "ffmpeg-bundle: cannot read {:?} for platform verification: {}",
+            path, e
+        ),
+    };
+
+    // Quick sniff for ELF (`\x7fELF`) and mach-o magic anywhere in the
+    // archive payload. Static `.a` files are an `ar` archive of object
+    // members — looking for the magic of those members is enough to
+    // identify the platform without parsing the archive format.
+    let elf_magic = b"\x7fELF";
+    let macho_magics: &[&[u8]] = &[
+        b"\xfe\xed\xfa\xce", // MH_MAGIC      (32-bit, BE host)
+        b"\xfe\xed\xfa\xcf", // MH_MAGIC_64   (64-bit, BE host)
+        b"\xce\xfa\xed\xfe", // MH_CIGAM      (32-bit, LE host)
+        b"\xcf\xfa\xed\xfe", // MH_CIGAM_64   (64-bit, LE host)
+        b"\xca\xfe\xba\xbe", // FAT_MAGIC
+        b"\xca\xfe\xba\xbf", // FAT_MAGIC_64
+    ];
+
+    fn contains(hay: &[u8], needle: &[u8]) -> bool {
+        hay.windows(needle.len()).any(|w| w == needle)
+    }
+
+    let has_elf = contains(&bytes, elf_magic);
+    let has_macho = macho_magics.iter().any(|m| contains(&bytes, m));
+
+    let want_macho = cfg!(target_os = "macos");
+    let want_elf = cfg!(any(target_os = "linux", target_os = "android"));
+
+    if want_macho && !has_macho {
+        let detected = if has_elf { "ELF (Linux)" } else { "unknown" };
+        panic!(
+            "ffmpeg-bundle: archive {:?} is not a macOS static library (detected: {}). \
+             The committed ffmpeg-bundle/dist/ artifacts appear to be for a different platform. \
+             Rebuild them from this machine: run `scripts/build-ffmpeg.sh` from the ffmpeg-bundle \
+             directory.",
+            path, detected
+        );
+    }
+    if want_elf && !has_elf {
+        let detected = if has_macho { "mach-o (macOS)" } else { "unknown" };
+        panic!(
+            "ffmpeg-bundle: archive {:?} is not a Linux static library (detected: {}). \
+             The committed ffmpeg-bundle/dist/ artifacts appear to be for a different platform. \
+             Rebuild them from this machine: run `scripts/build-ffmpeg.sh` from the ffmpeg-bundle \
+             directory.",
+            path, detected
+        );
     }
 }
