@@ -139,8 +139,35 @@ fn main() {
     println!("cargo:rustc-link-lib=static=swresample");
     println!("cargo:rustc-link-lib=static=avutil");
 
-    // Standard C deps that every ffmpeg build pulls in.
+    // Standard C deps. The minimal config (--disable-autodetect) pulls zlib in
+    // on Unix; the Windows MinGW build has no zlib (verified: no inflate/
+    // deflate symbols in the archives), so z is linked only off-Windows.
+    #[cfg(not(target_os = "windows"))]
     println!("cargo:rustc-link-lib=dylib=z");
+
+    #[cfg(target_os = "windows")]
+    {
+        // The archives are built with MinGW-w64, so the cartridge is built
+        // with the x86_64-pc-windows-gnu Rust toolchain (ABI-matched). That
+        // toolchain links the MinGW runtime (libgcc / libmingwex / libmsvcrt)
+        // automatically, so we only name the extra libs ffmpeg references,
+        // resolved from the toolchain's MinGW sysroot:
+        //   winpthread - clock_gettime64 / nanosleep64 (av_gettime/av_usleep)
+        //   bcrypt     - avutil CPRNG via BCryptGenRandom
+        //   secur32    - SSPI, pulled in by some avformat paths
+        //   ws2_32     - Winsock (pipe protocol + some demuxers)
+        // These mirror dist/link_flags.txt. We name them with the default
+        // (dynamic) directive; the gcc `-static` link flag in
+        // audiocartridge/.cargo/config.toml then statically links the real
+        // MinGW archive (libwinpthread.a) while leaving the OS system DLLs
+        // (bcrypt/secur32/ws2_32, whose .a are import libs) dynamic - giving a
+        // self-contained cartridge. Using static=winpthread here instead would
+        // make rustc search its own paths (not the MinGW sysroot) and fail.
+        println!("cargo:rustc-link-lib=winpthread");
+        println!("cargo:rustc-link-lib=bcrypt");
+        println!("cargo:rustc-link-lib=secur32");
+        println!("cargo:rustc-link-lib=ws2_32");
+    }
 
     #[cfg(target_os = "macos")]
     {
