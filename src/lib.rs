@@ -422,6 +422,7 @@ extern "C" {
     pub fn ffmpeg_embed_codecctx_sample_fmt(ctx: *const AVCodecContext) -> c_int;
     pub fn ffmpeg_embed_codecctx_set_bit_rate(ctx: *mut AVCodecContext, bit_rate: i64);
     pub fn ffmpeg_embed_codecctx_set_bits_per_raw_sample(ctx: *mut AVCodecContext, bits: c_int);
+    pub fn ffmpeg_embed_codecctx_bits_per_raw_sample(ctx: *const AVCodecContext) -> c_int;
 
     /// Configure a SwrContext from a pair of AVFrames (input shape +
     /// output shape) and initialise it. Sidesteps `swr_config_frame`'s
@@ -430,10 +431,14 @@ extern "C" {
     /// `UNSPEC` and `NATIVE` as non-equal even with matching counts,
     /// so swr's stored layout must be byte-identical to what the
     /// decoder produces. Returns 0 / negative AVERROR.
+    /// `dither`: 0 = none, nonzero = triangular dithering — pass
+    /// nonzero only for depth-REDUCING conversions (float/32-bit int
+    /// down to 16/24-bit int).
     pub fn ffmpeg_embed_swr_setup(
         swr: *mut SwrContext,
         in_frame: *const AVFrame,
         out_frame: *const AVFrame,
+        dither: c_int,
     ) -> c_int;
 
     /// Promote an `AV_CHANNEL_ORDER_UNSPEC` frame ch_layout to the

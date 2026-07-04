@@ -256,6 +256,10 @@ void ffmpeg_embed_codecctx_set_bit_rate(AVCodecContext *ctx, int64_t bit_rate) {
 /* FLAC and other lossless codecs require `bits_per_raw_sample` to be set
  * before avcodec_open2; without it the encoder rejects the open with
  * EINVAL. Caller passes 16 / 24 / 32 to match the chosen sample format. */
+int ffmpeg_embed_codecctx_bits_per_raw_sample(const AVCodecContext *ctx) {
+    return ctx ? ctx->bits_per_raw_sample : 0;
+}
+
 void ffmpeg_embed_codecctx_set_bits_per_raw_sample(AVCodecContext *ctx, int bits) {
     if (ctx) ctx->bits_per_raw_sample = bits;
 }
@@ -309,10 +313,16 @@ int ffmpeg_embed_frame_normalize_ch_layout(AVFrame *f) {
  * ch_layout (the encoder-shaped frame) verbatim too — same logic.
  *
  * Returns 0 on success or a negative AVERROR. */
+/* `dither` selects swresample's dither_method for depth-REDUCING
+ * conversions (float/32-bit int → 16/24-bit int): 0 = none,
+ * nonzero = triangular (SWR_DITHER_TRIANGULAR). Depth-preserving
+ * conversions should pass 0 — dithering same-or-widening
+ * conversions only adds noise. */
 int ffmpeg_embed_swr_setup(
     SwrContext *swr,
     const AVFrame *in_frame,
-    const AVFrame *out_frame
+    const AVFrame *out_frame,
+    int dither
 ) {
     int ret;
     AVChannelLayout in_layout_copy = {0};
@@ -320,6 +330,11 @@ int ffmpeg_embed_swr_setup(
 
     if (!in_frame || !out_frame) {
         return AVERROR(EINVAL);
+    }
+
+    if (dither) {
+        ret = av_opt_set_int(swr, "dither_method", SWR_DITHER_TRIANGULAR, 0);
+        if (ret < 0) goto done;
     }
 
     ret = av_channel_layout_copy(&in_layout_copy, &in_frame->ch_layout);
