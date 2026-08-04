@@ -7,7 +7,7 @@
     Windows equivalent of scripts/build-ffmpeg.sh.
     Downloads the pinned FFmpeg release, configures it with the same
     minimal feature set, and stages static archives + headers into .\dist\
-    — ready for build.rs to link against.
+    - ready for build.rs to link against.
 
     Build environment: MSYS2 with MinGW-w64 (x86_64).
     MinGW-w64 produces .a archives matching what build.rs expects.
@@ -52,7 +52,7 @@ function ConvertTo-MsysPath([string]$WinPath) {
 }
 
 function Invoke-Msys2Bash([string]$Script) {
-    # Write the script to a temp file — avoids quoting hazards with -c.
+    # Write the script to a temp file - avoids quoting hazards with -c.
     $tmp = [System.IO.Path]::GetTempFileName() + '.sh'
     try {
         [System.IO.File]::WriteAllText($tmp, $Script)
@@ -266,9 +266,9 @@ if (Test-Path $PkgconfigDir) { Remove-Item -Recurse -Force $PkgconfigDir }
 $LinkFlags  = '-Ldist/lib'
 $LinkFlags += ' -lavformat -lavcodec -lswscale -lswresample -lavutil'
 # Windows runtime deps for the MinGW-w64 build:
-#   ws2_32  — Winsock (pipe protocol + some demuxer paths)
-#   bcrypt  — avutil CPRNG on Windows (replaces getrandom/arc4random)
-#   secur32 — SSPI, pulled in by some avformat paths
+#   ws2_32  - Winsock (pipe protocol + some demuxer paths)
+#   bcrypt  - avutil CPRNG on Windows (replaces getrandom/arc4random)
+#   secur32 - SSPI, pulled in by some avformat paths
 $LinkFlags += ' -lws2_32 -lbcrypt -lsecur32'
 
 [System.IO.File]::WriteAllText((Join-Path $DistDir 'link_flags.txt'), $LinkFlags)
