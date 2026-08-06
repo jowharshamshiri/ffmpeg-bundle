@@ -401,6 +401,14 @@ extern "C" {
     pub fn ffmpeg_embed_frame_height(frame: *const AVFrame) -> c_int;
     pub fn ffmpeg_embed_frame_pix_fmt(frame: *const AVFrame) -> c_int;
     pub fn ffmpeg_embed_frame_pts(frame: *const AVFrame) -> i64;
+    /// Configure an (unref'd) output frame for `swr_convert_frame`: s16
+    /// interleaved at the given rate/channel count — the capture
+    /// providers' single conversion target.
+    pub fn ffmpeg_embed_frame_set_audio_out(
+        frame: *mut AVFrame,
+        sample_rate: c_int,
+        channels: c_int,
+    );
     pub fn ffmpeg_embed_frame_data(frame: *const AVFrame, plane: c_int) -> *mut u8;
     pub fn ffmpeg_embed_frame_linesize(frame: *const AVFrame, plane: c_int) -> c_int;
 

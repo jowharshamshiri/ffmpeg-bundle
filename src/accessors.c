@@ -100,6 +100,16 @@ AVRational ffmpeg_embed_stream_time_base(const AVStream *s) {
     return s ? s->time_base : (AVRational){0, 1};
 }
 
+/* Configure an (unref'd) output frame for swr_convert_frame: s16
+ * interleaved at the given rate/channel count. The capture providers'
+ * single conversion target (13.2 live feeds deliver s16le PCM items). */
+void ffmpeg_embed_frame_set_audio_out(AVFrame *f, int sample_rate, int channels) {
+    if (!f) return;
+    f->format = AV_SAMPLE_FMT_S16;
+    f->sample_rate = sample_rate;
+    av_channel_layout_default(&f->ch_layout, channels);
+}
+
 AVRational ffmpeg_embed_stream_avg_frame_rate(const AVStream *s) {
     return s ? s->avg_frame_rate : (AVRational){0, 1};
 }
