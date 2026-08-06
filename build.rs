@@ -4,10 +4,10 @@
 //! under `dist/lib/` by `scripts/build-ffmpeg.sh`. Mirrors the role of
 //! pdfium-render-bundled's build.rs.
 //!
-//! Hard requirement: `dist/lib/` must contain libavformat.a,
-//! libavcodec.a, libavutil.a, libswscale.a, libswresample.a. If the
-//! script has not been run, this build fails fast with a clear
-//! message — no fallback, no silent partial link.
+//! Hard requirement: `dist/lib/` must contain libavdevice.a,
+//! libavformat.a, libavcodec.a, libavutil.a, libswscale.a,
+//! libswresample.a. If the script has not been run, this build fails
+//! fast with a clear message — no fallback, no silent partial link.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -18,6 +18,7 @@ fn main() {
     let dist_lib = manifest_dir.join("dist").join("lib");
 
     let archives = [
+        "libavdevice.a",
         "libavformat.a",
         "libavcodec.a",
         "libavutil.a",
@@ -128,11 +129,14 @@ fn main() {
 
     // Link order matters with --as-needed linkers; the dependency
     // direction inside ffmpeg is roughly:
-    //   avformat -> avcodec -> swresample -> avutil
+    //   avdevice -> avformat -> avcodec -> swresample -> avutil
     //   avformat -> swscale -> avutil
     //   avcodec  -> swresample -> avutil
     //   swscale  -> avutil
-    // We list the most-dependent first.
+    // We list the most-dependent first. avdevice carries the capture
+    // input formats (alsa/v4l2 on Linux, avfoundation on macOS) the
+    // live-feed providers open (13.2 §Reference Media).
+    println!("cargo:rustc-link-lib=static=avdevice");
     println!("cargo:rustc-link-lib=static=avformat");
     println!("cargo:rustc-link-lib=static=avcodec");
     println!("cargo:rustc-link-lib=static=swscale");
@@ -144,6 +148,11 @@ fn main() {
     // deflate symbols in the archives), so z is linked only off-Windows.
     #[cfg(not(target_os = "windows"))]
     println!("cargo:rustc-link-lib=dylib=z");
+
+    // avdevice's alsa indev (microphone capture) calls into the system
+    // ALSA client library.
+    #[cfg(target_os = "linux")]
+    println!("cargo:rustc-link-lib=dylib=asound");
 
     #[cfg(target_os = "windows")]
     {
@@ -182,6 +191,11 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=AudioToolbox");
         println!("cargo:rustc-link-lib=framework=Security");
         println!("cargo:rustc-link-lib=framework=CoreServices");
+        // avdevice's avfoundation indev (microphone/camera capture).
+        println!("cargo:rustc-link-lib=framework=AVFoundation");
+        println!("cargo:rustc-link-lib=framework=CoreAudio");
+        println!("cargo:rustc-link-lib=framework=CoreGraphics");
+        println!("cargo:rustc-link-lib=framework=Foundation");
     }
 
     // Allow downstream override of the search path. Useful for CI

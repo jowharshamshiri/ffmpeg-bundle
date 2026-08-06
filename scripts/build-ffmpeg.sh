@@ -226,6 +226,16 @@ fi
 
 # Per-platform capture input devices (live feeds, 13.2 §Reference Media).
 if [[ "$(uname)" == "Linux" ]]; then
+    # Preflight: without the ALSA headers, ffmpeg's configure silently
+    # drops the alsa indev and the dist ships WITHOUT microphone capture
+    # — a broken live-feed backend nobody notices until runtime. Refuse.
+    if [[ ! -e /usr/include/alsa/asoundlib.h ]]; then
+        echo "ERROR: ALSA development headers not found (/usr/include/alsa/asoundlib.h)." >&2
+        echo "Microphone capture (avdevice alsa indev) cannot be built without them." >&2
+        echo "Install them first: sudo apt install libasound2-dev  (Debian/Ubuntu)" >&2
+        echo "                    sudo dnf install alsa-lib-devel   (Fedora)" >&2
+        exit 1
+    fi
     CONFIG_FLAGS+=(--enable-indev=alsa --enable-indev=v4l2)
 fi
 
