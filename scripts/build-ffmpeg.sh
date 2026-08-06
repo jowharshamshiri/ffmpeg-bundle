@@ -172,8 +172,13 @@ CONFIG_FLAGS=(
 
     # libavfilter pulls in a lot of code we don't use; drop it.
     --disable-avfilter
-    # libavdevice is for capture from cameras / displays — not relevant.
-    --disable-avdevice
+    # libavdevice: live-feed capture backends (13.2 §Reference Media) —
+    # microphone/webcam providers in the audio/video cartridges open
+    # devices through avdevice input formats (alsa/v4l2 on Linux,
+    # avfoundation on macOS — enabled per-platform below). Regenerating
+    # dist/ with this enabled is the gate for landing the capture
+    # providers.
+    --enable-avdevice
     # We never write container files, so libavformat's muxer path is
     # not exercised; the demuxer half is still on. Disabling muxers
     # globally saves a small amount.
@@ -219,10 +224,16 @@ if (( ${#FILTERS[@]} > 0 )); then
     CONFIG_FLAGS+=(--enable-filter=$(join_csv "${FILTERS[@]}"))
 fi
 
+# Per-platform capture input devices (live feeds, 13.2 §Reference Media).
+if [[ "$(uname)" == "Linux" ]]; then
+    CONFIG_FLAGS+=(--enable-indev=alsa --enable-indev=v4l2)
+fi
+
 # macOS-specific: VideoToolbox HW decode is available but we keep the
 # build host-portable. The fallback software decoders are always in.
 if [[ "$(uname)" == "Darwin" ]]; then
     CONFIG_FLAGS+=(--enable-videotoolbox)
+    CONFIG_FLAGS+=(--enable-indev=avfoundation)
     # Match deployment target to whatever the consuming Rust target
     # uses (the cartridge SDK currently targets recent macOS). Pin to
     # 12.0 conservatively.

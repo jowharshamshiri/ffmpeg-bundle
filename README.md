@@ -64,7 +64,8 @@ video-to-frames cap needs:
 | Bitstream filters | h264_mp4toannexb, hevc_mp4toannexb |
 | Protocols | file, pipe |
 | swscale, swresample | yes (used directly via C API) |
-| Encoders, muxers, filters, avdevice, avfilter | **disabled** — frame output happens in Rust via the `image` crate |
+| Encoders, muxers, filters, avfilter | **disabled** — frame output happens in Rust via the `image` crate |
+| avdevice (+ alsa/v4l2 indevs on Linux, avfoundation on macOS) | **enabled** — live-feed capture backends (microphone/webcam providers, 13.2 §Reference Media). Requires regenerating `dist/` per platform; the capture providers in audio/videocartridge land against the regenerated archives. |
 | GPL, nonfree | **disabled** |
 | Network, autodetect | **disabled** |
 
