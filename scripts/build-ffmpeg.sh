@@ -236,7 +236,10 @@ if [[ "$(uname)" == "Linux" ]]; then
         echo "                    sudo dnf install alsa-lib-devel   (Fedora)" >&2
         exit 1
     fi
-    CONFIG_FLAGS+=(--enable-indev=alsa --enable-indev=v4l2)
+    # --disable-autodetect turns the ALSA external library OFF regardless
+    # of the indev flag (configure then silently drops the alsa indev), so
+    # it must be enabled explicitly alongside the indev.
+    CONFIG_FLAGS+=(--enable-alsa --enable-indev=alsa --enable-indev=v4l2)
 fi
 
 # macOS-specific: VideoToolbox HW decode is available but we keep the
@@ -302,6 +305,28 @@ if [[ "$(uname)" == "Darwin" ]]; then
     LINK_FLAGS+=" -framework AudioToolbox"
     LINK_FLAGS+=" -framework Security"
     LINK_FLAGS+=" -framework CoreServices"
+fi
+
+# Post-build verification: the capture backends this dist EXISTS to
+# provide must actually be inside the archive — configure variants have
+# silently dropped them before (missing headers, --disable-autodetect).
+# A dist without them ships broken live-feed capture; refuse.
+if [[ "$(uname)" == "Linux" ]]; then
+    if ! ar t "$DIST_DIR/lib/libavdevice.a" | grep -q "^alsa"; then
+        echo "ERROR: built libavdevice.a contains no alsa members — the alsa indev was dropped." >&2
+        echo "Check ffmpeg's configure output for why alsa was not enabled." >&2
+        exit 1
+    fi
+    if ! ar t "$DIST_DIR/lib/libavdevice.a" | grep -q "^v4l2"; then
+        echo "ERROR: built libavdevice.a contains no v4l2 members — webcam capture was dropped." >&2
+        exit 1
+    fi
+fi
+if [[ "$(uname)" == "Darwin" ]]; then
+    if ! ar t "$DIST_DIR/lib/libavdevice.a" | grep -qi "avfoundation"; then
+        echo "ERROR: built libavdevice.a contains no avfoundation members — capture was dropped." >&2
+        exit 1
+    fi
 fi
 
 echo "$LINK_FLAGS" > "$DIST_DIR/link_flags.txt"
