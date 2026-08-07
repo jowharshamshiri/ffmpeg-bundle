@@ -114,7 +114,10 @@ fi
 # MOV/MP4; mjpeg appears in some AVIs). Audio: aac (MOV/MP4 audio
 # track), opus (WebM/MKV audio), flac/pcm/mp3 to support audio
 # transcoding pipelines (audiocartridge).
-DECODERS=(h264 hevc vp8 vp9 av1 mpeg4 mjpeg
+# rawvideo: what v4l2/avfoundation webcams deliver for YUYV/NV12-class
+# pixel formats (capture would otherwise fail with "no decoder for the
+# device's codec"); mjpeg covers MJPEG cameras.
+DECODERS=(h264 hevc vp8 vp9 av1 mpeg4 mjpeg rawvideo
           aac opus flac mp3 pcm_s16le pcm_s16be pcm_s24le pcm_s32le pcm_f32le vorbis alac)
 # Encoders. flac for audiocartridge convert-audio outputs; aac for
 # m4a remuxing fallback (the remux path doesn't transcode, but
