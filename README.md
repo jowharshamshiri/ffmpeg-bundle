@@ -1,107 +1,107 @@
 # ffmpeg-bundle
 
-Embedded LGPL-only ffmpeg static archives + a hand-written Rust FFI
-shim. Mirrors the role of [`pdfcartridge/pdfium-render-bundled`](../pdfcartridge/pdfium-render-bundled):
-the project that builds the C library and exposes it to a downstream
-Rust cartridge as a self-contained dependency, with no system
-ffmpeg required at runtime.
+Prebuilt, LGPL-only [FFmpeg](https://ffmpeg.org/) static archives and a thin
+Rust FFI shim, so a Rust program can decode and encode media without requiring
+FFmpeg to be installed on the machine it runs on.
 
-## What's here
+**This project is packaging, not authorship.** Everything that does the actual
+work here was written by the FFmpeg project and its contributors over more than
+two decades. This repository fetches a pinned FFmpeg release, builds it with a
+deliberately restricted configuration, and exposes the result to Cargo. The
+credit belongs upstream; please direct thanks, bug reports about codec
+behaviour, and any support you can offer to [the FFmpeg
+project](https://ffmpeg.org/donations.html).
 
-- `scripts/build-ffmpeg.sh` — fetches the pinned ffmpeg release
-  (`ffmpeg-version.txt`), runs `./configure` with a tightly minimised
-  feature set, builds, and stages `dist/{lib,include,link_flags.txt}`.
-- `src/lib.rs` — hand-curated `extern "C"` declarations for the
-  ~30-symbol API surface used by `videocartridge` (libavformat
-  open/read, libavcodec decode loop, libswscale color conversion,
-  libavutil frame allocation).
-- `src/accessors.c` — tiny C shim implementing field accessors over
-  ffmpeg's opaque structs (`AVFormatContext`, `AVStream`,
-  `AVCodecParameters`, `AVPacket`, `AVFrame`). Compiled by `build.rs`
-  against `dist/include/`. The Rust side never lays out an ffmpeg
-  struct itself.
-- `build.rs` — emits `cargo:rustc-link-*` directives pointing at
-  `dist/lib/` and the macOS frameworks ffmpeg needs at link time.
+## Why this exists
 
-## Producing the artifacts
+Linking FFmpeg from Rust normally means one of two unhappy choices:
 
-From this directory:
+- **Depend on a system FFmpeg.** Then your program's behaviour depends on
+  whichever version a distribution shipped, which codecs that build enabled,
+  and whether the user has it at all. Reproducing a bug becomes a conversation
+  about the user's package manager.
+- **Vendor and build FFmpeg yourself.** Then every consumer of your crate
+  inherits a C build: autotools, NASM, a working cross-compilation story, and
+  a fifteen-minute compile in front of every `cargo build`.
 
-```sh
-./scripts/build-ffmpeg.sh
+This repository takes the second path once, in one place, with the build recipe
+committed and the FFmpeg version pinned in `ffmpeg-version.txt`. Downstream
+crates get a normal Cargo dependency, a fixed set of codecs, and a binary that
+runs on a machine with no FFmpeg installed.
+
+It is deliberately general: nothing here is specific to any particular
+application.
+
+## Licensing — please read this before distributing anything
+
+FFmpeg is free software under the **GNU Lesser General Public License, version
+2.1 or later**. This build is configured with `--disable-gpl` and no non-free
+components, so the archives here are **LGPL-only**. That is a deliberate choice:
+it keeps the licensing posture of anything that links them as simple as the LGPL
+allows.
+
+If you ship a binary that statically links these archives, the LGPL asks a few
+things of you. In plain terms:
+
+1. **Say so.** Give prominent notice that your program uses FFmpeg and that
+   FFmpeg is covered by the LGPL-2.1-or-later, and include a copy of the
+   licence. `sources/ffmpeg-n7.1/COPYING.LGPLv2.1` is the text.
+2. **Provide the source.** The complete FFmpeg source this build came from is
+   committed in `sources/`, at the exact revision used. Redistribute it, or make
+   it available on the same terms you make your own binary available.
+3. **Allow relinking.** A user must be able to replace the FFmpeg part with
+   their own modified version. Shipping the static archives from `dist/lib`
+   alongside your object files, or your build recipe, satisfies this — which is
+   the reason the archives here are kept as `.a` files rather than folded into
+   an opaque binary.
+
+If you enable GPL components by changing the configure flags in
+`scripts/build-ffmpeg.sh`, none of the above holds any more and your entire
+program becomes subject to the GPL. The flags are the licence.
+
+This summary is a pointer, not legal advice. The licence text governs, and if
+you are distributing commercially it is worth an hour of a lawyer's time.
+
+### What is in this repository, and whose it is
+
+| Path | Contents | Copyright |
+| --- | --- | --- |
+| `sources/ffmpeg-*` | Unmodified FFmpeg release tarball and extracted tree | The FFmpeg authors — LGPL-2.1-or-later |
+| `dist/lib`, `dist/include` | Static archives and headers built from that source | The FFmpeg authors — LGPL-2.1-or-later |
+| `scripts/`, `build.rs`, `src/` | Build recipe and the Rust FFI shim | This repository's author, under the same licence |
+
+FFmpeg's own `LICENSE.md` in `sources/` lists the licences of every component
+it contains and is the authoritative statement.
+
+## Using it
+
+Add it as a Git dependency, pinned to a tag:
+
+```toml
+[dependencies.ffmpeg-bundle]
+git = "https://github.com/machinefabric/ffmpeg-bundle"
+tag = "v1.24.76"
 ```
 
-Requirements on the build host:
+The build script publishes the include path and link flags, so a dependent
+crate links the archives without any further configuration. `dist/link_flags.txt`
+records the exact flags used, which is also the fastest way to see what a
+consumer will actually link against.
 
-- Xcode command-line tools (clang, make).
-- `nasm` or `yasm` for x86 SIMD asm (Apple Silicon: `brew install nasm`).
-- `pkg-config`, `curl`, `tar`.
+To rebuild from source — after changing the pinned version, the configure
+flags, or to verify what the committed archives contain:
 
-The script:
+```bash
+scripts/build-ffmpeg.sh
+```
 
-1. Reads `ffmpeg-version.txt` (e.g. `n7.1`).
-2. Downloads `https://ffmpeg.org/releases/ffmpeg-7.1.tar.gz` into
-   `sources/ffmpeg-n7.1/` if not already present.
-3. Configures ffmpeg with `--disable-everything` plus a small
-   re-enable list (see the script for the exact codecs/demuxers/
-   parsers/protocols).
-4. Builds in `build/n7.1/` with `make -j$(nproc)`.
-5. Installs into `dist/`. Wipes `dist/` first to keep it idempotent.
+It fetches the release named in `ffmpeg-version.txt`, configures it with the
+restricted flag set, builds, and writes the archives into `dist/`.
 
-Re-run on demand. To bump the ffmpeg version, edit
-`ffmpeg-version.txt` and re-run.
+## Changing what is enabled
 
-## Feature scope
-
-The current configuration enables only what `videocartridge`'s
-video-to-frames cap needs:
-
-| Category | Enabled |
-|---|---|
-| Decoders | h264, hevc, vp8, vp9, av1, mpeg4, mjpeg |
-| Demuxers | mov (mp4/mov), matroska (mkv/webm), avi, mpegts, flv |
-| Parsers | h264, hevc, vp8, vp9, av1, mpeg4video, mjpeg |
-| Bitstream filters | h264_mp4toannexb, hevc_mp4toannexb |
-| Protocols | file, pipe |
-| swscale, swresample | yes (used directly via C API) |
-| Encoders, muxers, filters, avfilter | **disabled** — frame output happens in Rust via the `image` crate |
-| avdevice (+ alsa/v4l2 indevs on Linux, avfoundation on macOS) | **enabled** — live-feed capture backends (microphone/webcam providers, 13.2 §Reference Media). Requires regenerating `dist/` per platform; the capture providers in audio/videocartridge land against the regenerated archives. |
-| GPL, nonfree | **disabled** |
-| Network, autodetect | **disabled** |
-
-Programs (`ffmpeg`, `ffplay`, `ffprobe`), docs, and shared libraries
-are all disabled. Output is exclusively static archives + headers.
-
-## License
-
-ffmpeg is built **LGPL-2.1-or-later** here (no `--enable-gpl`, no
-`--enable-nonfree`). Downstream redistribution must comply with
-LGPL section 4 (allow relinking against a different libffmpeg).
-This is the same posture as pdfcartridge's libpdfium bundle.
-
-## Linking
-
-`build.rs` emits the necessary `cargo:rustc-link-*` directives so
-that any crate depending on `ffmpeg-bundle` gets the static archives
-and Apple frameworks linked automatically. There is no system
-ffmpeg dependency.
-
-If `dist/lib/` is missing when a downstream crate compiles,
-`build.rs` panics with a clear instruction to run the build script.
-**There is no fallback to a system ffmpeg** — by design. We want
-the link to fail loudly rather than silently pick up whatever ffmpeg
-happens to be installed on the host.
-
-## Why hand-written FFI instead of `bindgen` / `ffmpeg-sys-next`
-
-- The API surface we need is tiny (~30 functions, a handful of
-  opaque struct types).
-- Hand-written `extern "C"` is more stable across ffmpeg point
-  releases than bindgen output, which regenerates from headers and
-  produces noisy diffs on every minor version.
-- We avoid pulling `bindgen` + `libclang` into the build of every
-  cartridge that depends on us.
-- The `accessors.c` shim handles every place where we'd otherwise
-  need to know an ffmpeg struct's layout, so a future ffmpeg version
-  bump is a re-build of `accessors.c` against the new headers — no
-  Rust change required.
+`scripts/build-ffmpeg.sh` holds one `./configure` invocation, commented with the
+reason for each decision. Enabling a codec means adding a flag there and
+rebuilding; there is no hidden configuration elsewhere. Check the licence
+implications of anything you add — some components are GPL, and a few are
+non-free and cannot be redistributed at all.

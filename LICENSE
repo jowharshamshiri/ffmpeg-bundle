@@ -1,6 +1,15 @@
                   GNU LESSER GENERAL PUBLIC LICENSE
                        Version 2.1, February 1999
 
+FFmpeg is the work of the FFmpeg project and its contributors, copyright
+the FFmpeg authors. This repository builds and packages it; it does not
+author it. Every codec, container, filter and optimisation reachable
+through this crate came from upstream. Please direct credit, bug reports
+about media handling, and any support you can offer to the FFmpeg project
+(https://ffmpeg.org/). FFmpeg's own licence documentation, at
+`sources/ffmpeg-n7.1/LICENSE.md`, is authoritative for the licences of
+every component it contains.
+
 This component (ffmpeg-bundle) packages the FFmpeg static archives
 (libavformat, libavcodec, libavutil, libswscale, libswresample) and
 exposes them to Rust callers via a thin FFI shim plus a small C
@@ -28,6 +37,12 @@ What this means for downstream consumers:
     recipe at `scripts/build-ffmpeg.sh` produces the linked
     archives bit-for-bit; satisfying §6 of the LGPL is therefore
     automatic for anyone who has access to this repository.
+  - The LGPL also requires that a recipient be able to relink your
+    binary against a MODIFIED FFmpeg. Distributing the static
+    archives from `dist/lib` alongside your own object files, or
+    your build recipe, satisfies this; the archives are kept as
+    separate `.a` files rather than folded into an opaque binary
+    for exactly that reason.
   - Dynamic linking against the produced static archives is not
     materially different from static linking for licensing purposes
     — both routes preserve LGPL-2.1's terms on the FFmpeg portion.
