@@ -1,21 +1,34 @@
-//! ffmpeg-embed build script.
+//! ffmpeg-bundle build script.
 //!
-//! Wires the consumer crate's link line to the static archives staged
-//! under `dist/lib/` by `scripts/build-ffmpeg.sh`. Mirrors the role of
-//! pdfium-render-bundled's build.rs.
+//! PRODUCES the static archives, then wires the consumer's link line to
+//! them. It does not expect to find them: `scripts/build-ffmpeg.sh` is a
+//! pinned recipe, and running it here is what lets this crate be resolved
+//! from a git tag and built like any other dependency — no prebuilt binary
+//! in the repository, no manual step before the first `cargo build`.
 //!
-//! Hard requirement: `dist/lib/` must contain libavdevice.a,
-//! libavformat.a, libavcodec.a, libavutil.a, libswscale.a,
-//! libswresample.a. If the script has not been run, this build fails
-//! fast with a clear message — no fallback, no silent partial link.
+//! Nothing is written into the source tree. Output goes to
+//! `FFMPEG_BUNDLE_BUILD_DIR` when set, and otherwise to cargo's own
+//! `OUT_DIR` — both are build directories, and neither is committed.
+//! Pointing the variable at one shared location is worth doing in a
+//! workspace with several target directories, because `OUT_DIR` differs per
+//! target directory and ffmpeg would otherwise be compiled once per tree.
+//!
+//! The output directory is CONTENT-ADDRESSED by a build identity: the pinned
+//! version, the recipe itself, and the target platform. A cached tree is
+//! reused only when it was produced by exactly this input, so changing the
+//! version or a configure flag cannot leave a consumer linked against the
+//! previous build — and a tree is published by an atomic rename, so a reader
+//! never observes a half-written one.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 fn main() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let dist_lib = manifest_dir.join("dist").join("lib");
+    let dist = ensure_dist(&manifest_dir);
+    let dist_lib = dist.join("lib");
 
     let archives = [
         "libavdevice.a",
@@ -42,12 +55,14 @@ fn main() {
     for archive in archives {
         let path = dist_lib.join(archive);
         if !path.is_file() {
+            // The build ran and reported success, so a missing archive means
+            // the recipe and this list disagree about what it produces. That
+            // is a defect in this crate, not something a consumer can act on.
             panic!(
-                "ffmpeg-embed: required static archive {:?} not present.\n\
-                 Run scripts/build-ffmpeg.sh from the ffmpeg-embed directory to produce dist/.\n\
-                 Mirroring pdfium-render-bundled, the bundled artifacts are this crate's contract — \
-                 they are not optional and must not be silently fallen back on system ffmpeg.",
-                path
+                "ffmpeg-bundle: {:?} is missing after a successful build of {:?}.\n\
+                 scripts/build-ffmpeg.sh and the archive list in build.rs disagree \
+                 about what the recipe produces.",
+                path, dist
             );
         }
         let meta = std::fs::metadata(&path).unwrap_or_else(|e| {
@@ -57,14 +72,14 @@ fn main() {
             );
         });
 
-        // Platform check. The archives committed to the repo can be
-        // for the wrong OS — e.g. a Linux build of ffmpeg-bundle
-        // committed by accident — and the link will fail far down
-        // the build with the opaque
-        // "archive member 'aacdec.o' not a mach-o file" error.
-        // Detect that here by reading the file once and looking for
-        // ELF or mach-o magic bytes. On the wrong OS we panic with a
-        // message that says exactly what to do.
+        // Platform check. A cached tree can be for the wrong OS — a
+        // build directory shared across machines, or a network mount —
+        // and the link then fails far down the build with the opaque
+        // "archive member 'aacdec.o' not a mach-o file" error. Detect
+        // it here by reading the file once and looking for ELF or
+        // mach-o magic bytes. The build identity includes the target
+        // platform, so this should be unreachable; it stays because the
+        // failure it replaces is unreadable.
         verify_archive_platform(&path);
 
         archive.hash(&mut fingerprint);
@@ -98,18 +113,18 @@ fn main() {
         fingerprint.finish()
     );
 
-    println!("cargo:rerun-if-changed=dist/link_flags.txt");
     println!("cargo:rerun-if-changed=src/accessors.c");
     println!("cargo:rerun-if-changed=src/lib.rs");
 
     // Compile the C shim that reads fields off ffmpeg's opaque
     // structs. Linking it in this same crate keeps the Rust side
     // free of any layout assumption about ffmpeg internals.
-    let dist_include = manifest_dir.join("dist").join("include");
+    let dist_include = dist.join("include");
     if !dist_include.is_dir() {
         panic!(
-            "ffmpeg-embed: dist/include is missing — scripts/build-ffmpeg.sh has not staged headers. \
-             dist/include is required to compile the C accessors shim."
+            "ffmpeg-bundle: {:?} is missing after a successful build — the recipe did not \
+             stage headers, which the C accessors shim needs to compile.",
+            dist_include
         );
     }
     cc::Build::new()
@@ -198,11 +213,155 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=Foundation");
     }
 
-    // Allow downstream override of the search path. Useful for CI
-    // setups where dist/ is staged elsewhere.
-    if let Ok(extra) = std::env::var("FFMPEG_EMBED_LIB_PATH") {
-        println!("cargo:rustc-link-search=native={}", extra);
+}
+
+/// Produce the archives, or reuse a cached tree built from exactly this input.
+///
+/// Returns the dist directory to link against.
+fn ensure_dist(manifest_dir: &Path) -> PathBuf {
+    println!("cargo:rerun-if-env-changed=FFMPEG_BUNDLE_BUILD_DIR");
+    println!("cargo:rerun-if-changed=ffmpeg-version.txt");
+    println!("cargo:rerun-if-changed=scripts/build-ffmpeg.sh");
+
+    let out_dir = PathBuf::from(
+        std::env::var("OUT_DIR").expect("cargo always sets OUT_DIR for a build script"),
+    );
+    // `OUT_DIR` is cargo's build directory for this crate, so the default
+    // already keeps output out of the source tree. The override exists because
+    // `OUT_DIR` differs per target directory, and a workspace with several
+    // would otherwise compile ffmpeg once per tree.
+    let build_root = match std::env::var("FFMPEG_BUNDLE_BUILD_DIR") {
+        Ok(dir) if !dir.trim().is_empty() => PathBuf::from(dir),
+        _ => out_dir,
+    };
+
+    let identity = build_identity(manifest_dir);
+    // Content-addressed: a tree is reused only when it was produced by this
+    // exact version, recipe and platform. Reusing one across a version bump is
+    // how a consumer ends up linked against libraries nobody asked for.
+    let dist = build_root.join(format!("dist-{identity}"));
+    if dist.join("lib").is_dir() {
+        return dist;
     }
+
+    // One builder at a time. Two cargo invocations can reach here at once —
+    // `dx test` runs several target directories in parallel and more than one
+    // depends on this crate — and compiling ffmpeg twice into the same place
+    // wastes many minutes for a result only one of them can publish.
+    let lock = build_root.join(format!("lock-{identity}"));
+    let held = acquire(&lock);
+    if !held {
+        // Someone else is building it. Wait for their tree, then use it.
+        if wait_for(&dist) {
+            return dist;
+        }
+        // They died without publishing. Take over rather than fail: the
+        // alternative is a build that cannot proceed until a human removes a
+        // lock directory they never knew existed.
+        println!("cargo:warning=ffmpeg-bundle: taking over a stale build lock at {lock:?}");
+        let _ = std::fs::remove_dir(&lock);
+        if !acquire(&lock) && !wait_for(&dist) {
+            panic!("ffmpeg-bundle: cannot acquire the build lock at {lock:?}");
+        }
+    }
+
+    // Re-check under the lock: the previous holder may have finished between
+    // our first look and our acquiring it.
+    if dist.join("lib").is_dir() {
+        let _ = std::fs::remove_dir(&lock);
+        return dist;
+    }
+
+    // Build in a scratch tree and PUBLISH by rename. A reader can then only
+    // ever see a complete tree — never one mid-write, which links against
+    // whatever archives happened to exist at that instant.
+    //
+    // The scratch is named from the identity, not the process: it holds the
+    // fetched tarball and the make tree, both worth reusing when a build is
+    // retried, and the lock above already guarantees a single writer. Naming
+    // it per process would leave a fresh multi-hundred-megabyte copy behind on
+    // every attempt.
+    let scratch = build_root.join(format!("scratch-{identity}"));
+    let result = run_recipe(manifest_dir, &scratch);
+    if result.is_ok() {
+        // The recipe writes `dist/` under the directory it is given.
+        if std::fs::rename(scratch.join("dist"), &dist).is_err() && !dist.join("lib").is_dir() {
+            let _ = std::fs::remove_dir(&lock);
+            panic!(
+                "ffmpeg-bundle: cannot publish the built archives to {dist:?} — \
+                 the build succeeded but its output could not be moved into place."
+            );
+        }
+    }
+    let _ = std::fs::remove_dir(&lock);
+    match result {
+        Ok(()) => dist,
+        Err(message) => panic!("{message}"),
+    }
+}
+
+/// Run the pinned recipe, with its output directed at `into`.
+fn run_recipe(manifest_dir: &Path, into: &Path) -> Result<(), String> {
+    let script = manifest_dir.join("scripts").join("build-ffmpeg.sh");
+    println!(
+        "cargo:warning=ffmpeg-bundle: building ffmpeg from source into {into:?} \
+         (once per version and platform; several minutes)"
+    );
+    let status = std::process::Command::new("bash")
+        .arg(&script)
+        .current_dir(manifest_dir)
+        .env("FFMPEG_BUNDLE_BUILD_DIR", into)
+        .status()
+        .map_err(|e| format!("ffmpeg-bundle: cannot run {script:?}: {e}"))?;
+    if !status.success() {
+        return Err(format!(
+            "ffmpeg-bundle: {script:?} failed ({status}).\n\
+             It needs make, clang, pkg-config, curl, tar and one of nasm/yasm on PATH."
+        ));
+    }
+    Ok(())
+}
+
+/// A directory created atomically, held for the duration of a build.
+///
+/// `create_dir` is the primitive: it either creates the directory or reports
+/// that it exists, in one step, on every filesystem worth building on. A lock
+/// file written after a check is not the same thing.
+fn acquire(lock: &Path) -> bool {
+    if let Some(parent) = lock.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::create_dir(lock).is_ok()
+}
+
+/// Wait for another builder to publish `dist`. Bounded, because a builder that
+/// died holding the lock must not stall every consumer forever.
+fn wait_for(dist: &Path) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(30 * 60);
+    while Instant::now() < deadline {
+        if dist.join("lib").is_dir() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
+    false
+}
+
+/// What the output depends on: the pinned version, the recipe that builds it,
+/// and the platform it is built for.
+///
+/// The configure flags live inside the recipe, so hashing the recipe covers
+/// them — there is no second place a flag can change without this noticing.
+fn build_identity(manifest_dir: &Path) -> String {
+    let mut hasher = DefaultHasher::new();
+    for file in ["ffmpeg-version.txt", "scripts/build-ffmpeg.sh"] {
+        let path = manifest_dir.join(file);
+        let bytes = std::fs::read(&path)
+            .unwrap_or_else(|e| panic!("ffmpeg-bundle: cannot read {path:?}: {e}"));
+        bytes.hash(&mut hasher);
+    }
+    std::env::var("TARGET").unwrap_or_default().hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 /// Verify that a static archive's object members match the host

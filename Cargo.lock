@@ -13,8 +13,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "ffmpeg-embed"
-version = "0.1.0"
+name = "ffmpeg-bundle"
+version = "1.27.0"
 dependencies = [
  "cc",
 ]

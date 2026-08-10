@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
 #
 # build-ffmpeg.sh — fetch a pinned ffmpeg release and produce static
-# archives + headers under ./dist/, suitable for embedding into a
-# downstream Rust crate without any system ffmpeg dependency.
+# archives + headers, suitable for embedding into a downstream Rust
+# crate without any system ffmpeg dependency.
 #
-# Mirrors the role of pdfcartridge/pdfium-render-bundled/dist: this
-# script is the one source of truth for *how* the bundled libraries
-# were configured. Re-running this script regenerates dist/ exactly,
-# bit-for-bit modulo timestamps embedded by ffmpeg itself.
+# This script is the one source of truth for *how* the bundled
+# libraries were configured. Re-running it regenerates the output
+# exactly, bit-for-bit modulo timestamps embedded by ffmpeg itself.
+#
+# NOTHING IS WRITTEN INTO THE SOURCE TREE. The archives are a build
+# product, not source, so they are never committed: a consumer builds
+# them, into a build directory, from this pinned recipe. `build.rs`
+# runs this script for exactly that reason, so resolving this crate
+# from a git tag needs no manual step and carries no prebuilt binary.
 #
 # We disable everything by default and re-enable only the muxers,
 # demuxers, decoders, parsers, encoders, filters, and protocols
@@ -23,16 +28,22 @@
 #   - curl (or git) for source fetch
 #
 # Output:
-#   ./dist/lib/libavformat.a
-#   ./dist/lib/libavcodec.a
-#   ./dist/lib/libavutil.a
-#   ./dist/lib/libswscale.a
-#   ./dist/lib/libswresample.a   (avformat depends on it)
-#   ./dist/include/libav*/...
-#   ./dist/include/libswscale/...
-#   ./dist/include/libswresample/...
-#   ./dist/link_flags.txt
-#   ./dist/ffmpeg-version.txt
+# Required environment:
+#   FFMPEG_BUNDLE_BUILD_DIR   where everything this script produces goes.
+#                             Deliberately has NO default: the one wrong
+#                             answer is the source tree, and a default is
+#                             how output ends up there. `build.rs` passes
+#                             cargo's own build directory; a human passes
+#                             wherever their workspace keeps build output.
+#
+# Output, all under $FFMPEG_BUNDLE_BUILD_DIR:
+#   sources/            the fetched ffmpeg tarball, unpacked
+#   obj/<version>/      the configure + make scratch tree
+#   dist/lib/libavdevice.a  libavformat.a  libavcodec.a
+#                       libavutil.a  libswscale.a  libswresample.a
+#   dist/include/libav*/...  libswscale/...  libswresample/...
+#   dist/link_flags.txt
+#   dist/ffmpeg-version.txt
 #
 # Re-run on demand. Idempotent — wipes dist/ at the start.
 
@@ -47,10 +58,28 @@ if [[ -z "$VERSION" ]]; then
     exit 1
 fi
 
-SOURCES_DIR="$ROOT/sources"
+if [[ -z "${FFMPEG_BUNDLE_BUILD_DIR:-}" ]]; then
+    cat >&2 <<'USAGE'
+build-ffmpeg.sh: FFMPEG_BUNDLE_BUILD_DIR is not set.
+
+This script produces build output, and build output does not belong in a
+source tree — which is the only place a default could put it. Name the
+directory explicitly:
+
+    FFMPEG_BUNDLE_BUILD_DIR=/path/to/build/ffmpeg scripts/build-ffmpeg.sh
+
+`build.rs` sets it to cargo's own build directory, so consumers never run
+this by hand.
+USAGE
+    exit 1
+fi
+
+OUT_ROOT="$FFMPEG_BUNDLE_BUILD_DIR"
+mkdir -p "$OUT_ROOT"
+SOURCES_DIR="$OUT_ROOT/sources"
 SOURCE_DIR="$SOURCES_DIR/ffmpeg-$VERSION"
-DIST_DIR="$ROOT/dist"
-BUILD_DIR="$ROOT/build/$VERSION"
+DIST_DIR="$OUT_ROOT/dist"
+BUILD_DIR="$OUT_ROOT/obj/$VERSION"
 
 echo "==> ffmpeg-embed: building ffmpeg $VERSION"
 echo "    SOURCE_DIR = $SOURCE_DIR"
@@ -290,7 +319,7 @@ rm -rf "$DIST_DIR/share" "$DIST_DIR/lib/pkgconfig"
 # Emit link_flags.txt and version stamp
 # ---------------------------------------------------------------------------
 
-LINK_FLAGS="-Ldist/lib"
+LINK_FLAGS="-L$DIST_DIR/lib"
 LINK_FLAGS+=" -lavformat -lavcodec -lswscale -lswresample -lavutil"
 # C runtime
 LINK_FLAGS+=" -lm -lpthread"
