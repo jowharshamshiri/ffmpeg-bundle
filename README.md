@@ -79,7 +79,7 @@ Add it as a Git dependency, pinned to a tag:
 
 ```toml
 [dependencies.ffmpeg-bundle]
-git = "https://github.com/machinefabric/ffmpeg-bundle"
+git = "https://github.com/jowharshamshiri/ffmpeg-bundle"
 tag = "v1.24.76"
 ```
 
