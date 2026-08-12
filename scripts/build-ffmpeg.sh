@@ -278,7 +278,13 @@ fi
 # build host-portable. The fallback software decoders are always in.
 if [[ "$(uname)" == "Darwin" ]]; then
     CONFIG_FLAGS+=(--enable-videotoolbox)
-    CONFIG_FLAGS+=(--enable-indev=avfoundation)
+    # --enable-avfoundation as well as the indev, for the same reason the ALSA
+    # branch above spells out: --disable-autodetect turns the AVFoundation
+    # dependency OFF regardless of the indev flag, and configure then drops the
+    # indev without saying so. config.mak records `!CONFIG_AVFOUNDATION=yes`
+    # and libavdevice.a ships with four objects and no capture — which the
+    # assertion at the end of this script is the only thing that notices.
+    CONFIG_FLAGS+=(--enable-avfoundation --enable-indev=avfoundation)
     # Match deployment target to whatever the consuming Rust target
     # uses (the cartridge SDK currently targets recent macOS). Pin to
     # 12.0 conservatively.
