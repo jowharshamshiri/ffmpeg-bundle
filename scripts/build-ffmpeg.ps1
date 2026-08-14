@@ -151,32 +151,52 @@ fi
 # ---------------------------------------------------------------------------
 # Fetch source
 # ---------------------------------------------------------------------------
+# Every artifact below is published by RENAME, and every guard tests the
+# published name - the same rule build-ffmpeg.sh carries. A step is finished
+# when its result is at its final name, and never merely because a name
+# exists. Guarding on a path that is written in place makes an interrupted
+# step indistinguishable from a completed one, and since every later run then
+# skips it, the tree stays broken until someone deletes the right file.
 if (-not (Test-Path $SourceDir)) {
     New-Item -ItemType Directory -Force -Path $SourcesDir | Out-Null
 
     $Tarball = Join-Path $SourcesDir "ffmpeg-$Version.tar.gz"
     if (-not (Test-Path $Tarball)) {
-        $Url = "https://ffmpeg.org/releases/ffmpeg-$VersionNoPrefix.tar.gz"
+        # www., not the apex. The apex name has answered with a reset
+        # connection for long stretches, and a build that dies there died for
+        # a reason with nothing to do with this recipe.
+        $Url = "https://www.ffmpeg.org/releases/ffmpeg-$VersionNoPrefix.tar.gz"
         Write-Host "==> Fetching $Url" -ForegroundColor Cyan
-        Invoke-WebRequest -Uri $Url -OutFile $Tarball -UseBasicParsing
+        $Partial = "$Tarball.partial"
+        if (Test-Path $Partial) { Remove-Item -Force $Partial }
+        Invoke-WebRequest -Uri $Url -OutFile $Partial -UseBasicParsing
+        Move-Item -Path $Partial -Destination $Tarball
     }
 
     Write-Host "==> Extracting $Tarball" -ForegroundColor Cyan
+    # Extracted beside the source tree and renamed in: a killed extraction
+    # leaves the scratch, which the next run replaces, rather than a
+    # half-populated tree sitting at the name that means "fetched".
+    $Extracting = Join-Path $SourcesDir ".extracting-$Version"
+    if (Test-Path $Extracting) { Remove-Item -Recurse -Force $Extracting }
+    New-Item -ItemType Directory -Force -Path $Extracting | Out-Null
     # Windows 10 1803+ ships tar.exe; fall back to MSYS2 tar otherwise.
     if (Get-Command tar -CommandType Application -ErrorAction SilentlyContinue) {
-        & tar -xzf $Tarball -C $SourcesDir
+        & tar -xzf $Tarball -C $Extracting
         if ($LASTEXITCODE -ne 0) { throw "tar extraction failed" }
     } else {
-        $msysTar     = ConvertTo-MsysPath $Tarball
-        $msysSources = ConvertTo-MsysPath $SourcesDir
-        Invoke-Msys2Bash "tar -xzf '$msysTar' -C '$msysSources'"
+        $msysTar        = ConvertTo-MsysPath $Tarball
+        $msysExtracting = ConvertTo-MsysPath $Extracting
+        Invoke-Msys2Bash "tar -xzf '$msysTar' -C '$msysExtracting'"
     }
 
     # Rename from ffmpeg-X.Y to ffmpeg-nX.Y to match the pinned tag form.
-    $ExtractedDir = Join-Path $SourcesDir "ffmpeg-$VersionNoPrefix"
-    if ((Test-Path $ExtractedDir) -and (-not (Test-Path $SourceDir))) {
-        Rename-Item -Path $ExtractedDir -NewName "ffmpeg-$Version"
+    $ExtractedDir = Join-Path $Extracting "ffmpeg-$VersionNoPrefix"
+    if (-not (Test-Path $ExtractedDir)) {
+        throw "the tarball did not contain ffmpeg-$VersionNoPrefix"
     }
+    Move-Item -Path $ExtractedDir -Destination $SourceDir
+    Remove-Item -Recurse -Force $Extracting
 }
 
 # ---------------------------------------------------------------------------
@@ -204,8 +224,13 @@ PROTOCOLS='file,pipe'
 mkdir -p '$MsysBuildDir'
 cd '$MsysBuildDir'
 
-if [ ! -f config.mak ] || [ '$ReconfigureFlag' = '1' ]; then
+# Stamped after configure returns, not inferred from config.mak: configure
+# writes config.mak partway through its own run and keeps going, so a
+# configure killed after that point left the file behind and every later run
+# skipped configuring entirely.
+if [ ! -f .configured-$Version ] || [ '$ReconfigureFlag' = '1' ]; then
     echo '==> Configuring'
+    rm -f .configured-$Version
     '$MsysSourceDir/configure' \
         --prefix='$MsysDistDir' \
         --arch=x86_64 \
@@ -239,6 +264,7 @@ if [ ! -f config.mak ] || [ '$ReconfigureFlag' = '1' ]; then
         --cxx=g++ \
         --ld=gcc \
         --ar=ar
+    touch .configured-$Version
 fi
 
 CORES=`$(nproc 2>/dev/null || echo 4)

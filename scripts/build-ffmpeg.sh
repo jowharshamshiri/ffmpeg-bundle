@@ -111,21 +111,36 @@ require tar
 # Fetch
 # ---------------------------------------------------------------------------
 
+# Every artifact below is published by RENAME, and every guard tests the
+# published name. That is the whole rule: a step is finished when its result
+# is at its final name, and never merely because a name exists. Guarding on a
+# path that is written in place makes an interrupted step indistinguishable
+# from a completed one — and since every later run then skips it, the tree
+# stays broken until someone who knows the layout deletes the right file.
 if [[ ! -d "$SOURCE_DIR" ]]; then
     mkdir -p "$SOURCES_DIR"
     TARBALL="$SOURCES_DIR/ffmpeg-$VERSION.tar.gz"
     if [[ ! -f "$TARBALL" ]]; then
-        URL="https://ffmpeg.org/releases/ffmpeg-${VERSION#n}.tar.gz"
+        # www., not the apex. The apex name has answered with a reset
+        # connection for long stretches, and a build that dies there died for
+        # a reason with nothing to do with this recipe.
+        URL="https://www.ffmpeg.org/releases/ffmpeg-${VERSION#n}.tar.gz"
         echo "==> Fetching $URL"
-        curl -fL -o "$TARBALL" "$URL"
+        curl -fL --retry 3 --retry-connrefused -o "$TARBALL.partial" "$URL"
+        mv "$TARBALL.partial" "$TARBALL"
     fi
     echo "==> Extracting $TARBALL"
-    tar -xzf "$TARBALL" -C "$SOURCES_DIR"
+    # Extracted beside the source tree and renamed in, for the same reason:
+    # a killed `tar` leaves the scratch, which the next run replaces, rather
+    # than a half-populated tree sitting at the name that means "fetched".
+    EXTRACTING="$SOURCES_DIR/.extracting-$VERSION"
+    rm -rf "$EXTRACTING"
+    mkdir -p "$EXTRACTING"
+    tar -xzf "$TARBALL" -C "$EXTRACTING"
     # Tarball top-level directory is "ffmpeg-X.Y" (no n prefix); rename
     # to match our pinned tag form so everything else stays stable.
-    if [[ -d "$SOURCES_DIR/ffmpeg-${VERSION#n}" && ! -d "$SOURCE_DIR" ]]; then
-        mv "$SOURCES_DIR/ffmpeg-${VERSION#n}" "$SOURCE_DIR"
-    fi
+    mv "$EXTRACTING/ffmpeg-${VERSION#n}" "$SOURCE_DIR"
+    rmdir "$EXTRACTING"
 fi
 
 # ---------------------------------------------------------------------------
@@ -298,9 +313,17 @@ fi
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
-if [[ ! -f config.mak || "${RECONFIGURE:-0}" == "1" ]]; then
+# Stamped by us AFTER configure returns, rather than guarded on `config.mak`.
+# configure writes config.mak partway through its own run and keeps going, so
+# a configure killed after that point left the file behind and every later run
+# skipped configuring entirely — then `make` failed against a half-written
+# config for as long as the tree survived.
+CONFIGURED_STAMP="$BUILD_DIR/.configured-$VERSION"
+if [[ ! -f "$CONFIGURED_STAMP" || "${RECONFIGURE:-0}" == "1" ]]; then
     echo "==> Configuring"
+    rm -f "$CONFIGURED_STAMP"
     "$SOURCE_DIR/configure" "${CONFIG_FLAGS[@]}"
+    touch "$CONFIGURED_STAMP"
 fi
 
 CORES="$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"

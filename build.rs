@@ -245,9 +245,9 @@ fn ensure_dist(manifest_dir: &Path) -> PathBuf {
     }
 
     // One builder at a time. Two cargo invocations can reach here at once —
-    // `dx test` runs several target directories in parallel and more than one
-    // depends on this crate — and compiling ffmpeg twice into the same place
-    // wastes many minutes for a result only one of them can publish.
+    // a workspace test run drives several target directories in parallel and
+    // more than one depends on this crate — and compiling ffmpeg twice into
+    // the same place wastes many minutes for a result only one can publish.
     let lock = build_root.join(format!("lock-{identity}"));
     let held = acquire(&lock);
     if !held {
