@@ -88,10 +88,40 @@ if ([string]::IsNullOrEmpty($Version)) {
 }
 $VersionNoPrefix = $Version -replace '^n', ''
 
-$SourcesDir = Join-Path $Root 'sources'
+# Everything this script produces goes under FFMPEG_BUNDLE_BUILD_DIR, and it
+# has NO default — the same contract build-ffmpeg.sh carries, for the same
+# reason: the one wrong answer is the source tree, and a default is how output
+# ends up there. This script used to write into $Root, which put a build tree
+# inside cargo's read-only git checkout of this crate.
+$OutRoot = $env:FFMPEG_BUNDLE_BUILD_DIR
+if ([string]::IsNullOrWhiteSpace($OutRoot)) {
+    # A LITERAL here-string. The interpolating kind treats a backtick as an
+    # escape, so the ``build.rs`` in the last line would have become a
+    # backspace character in the middle of the message.
+    throw @'
+build-ffmpeg.ps1: FFMPEG_BUNDLE_BUILD_DIR is not set.
+
+This script produces build output, and build output does not belong in a
+source tree - which is the only place a default could put it. Name the
+directory explicitly:
+
+    $env:FFMPEG_BUNDLE_BUILD_DIR = 'C:\path\to\build\ffmpeg'
+    .\scripts\build-ffmpeg.ps1
+
+build.rs sets it to cargo's own build directory, so consumers never run
+this by hand.
+'@
+}
+New-Item -ItemType Directory -Force -Path $OutRoot | Out-Null
+
+# The layout mirrors build-ffmpeg.sh exactly. build.rs publishes by renaming
+# `<given>/dist` into place and knows nothing about which recipe produced it,
+# so a Windows tree that spelled its directories differently would build
+# successfully and then fail to publish.
+$SourcesDir = Join-Path $OutRoot 'sources'
 $SourceDir  = Join-Path $SourcesDir "ffmpeg-$Version"
-$DistDir    = Join-Path $Root 'dist'
-$BuildDir   = Join-Path $Root "build\$Version"
+$DistDir    = Join-Path $OutRoot 'dist'
+$BuildDir   = Join-Path $OutRoot "obj\$Version"
 
 Write-Host "==> ffmpeg-embed: building ffmpeg $Version" -ForegroundColor Cyan
 Write-Host "    SOURCE_DIR = $SourceDir"

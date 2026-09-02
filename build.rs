@@ -221,7 +221,13 @@ fn main() {
 fn ensure_dist(manifest_dir: &Path) -> PathBuf {
     println!("cargo:rerun-if-env-changed=FFMPEG_BUNDLE_BUILD_DIR");
     println!("cargo:rerun-if-changed=ffmpeg-version.txt");
+    // BOTH recipes, not this platform's. `rerun-if-changed` is about when to
+    // run the build script at all, and running it when the other platform's
+    // recipe moved costs one cheap re-execution that finds its dist already
+    // there. Naming only one would mean a Windows machine never noticing an
+    // edit to the recipe it actually uses.
     println!("cargo:rerun-if-changed=scripts/build-ffmpeg.sh");
+    println!("cargo:rerun-if-changed=scripts/build-ffmpeg.ps1");
 
     let out_dir = PathBuf::from(
         std::env::var("OUT_DIR").expect("cargo always sets OUT_DIR for a build script"),
@@ -300,23 +306,73 @@ fn ensure_dist(manifest_dir: &Path) -> PathBuf {
     }
 }
 
+/// The recipe for this platform, and the program that runs it.
+///
+/// Two recipes, because the build environments are not the same shape: a Unix
+/// host has make and clang on PATH, and a Windows host has MSYS2 with
+/// MinGW-w64 inside it, which the PowerShell recipe locates and drives.
+///
+/// The Windows recipe was committed and never referenced. Every Windows build
+/// ran `bash build-ffmpeg.sh`, found no bash, and reported that the SCRIPT
+/// could not be found — which sent the reader to look at a file that was
+/// sitting right there.
+fn recipe(manifest_dir: &Path) -> (&'static str, Vec<String>, PathBuf) {
+    let scripts = manifest_dir.join("scripts");
+    if cfg!(target_os = "windows") {
+        let script = scripts.join("build-ffmpeg.ps1");
+        (
+            "powershell",
+            vec![
+                "-NoProfile".to_string(),
+                // The recipe is a file, and a guest's default execution policy
+                // is Restricted, which refuses one. `Bypass` applies to what
+                // this command loads.
+                "-ExecutionPolicy".to_string(),
+                "Bypass".to_string(),
+                "-File".to_string(),
+                script.display().to_string(),
+            ],
+            script,
+        )
+    } else {
+        let script = scripts.join("build-ffmpeg.sh");
+        ("bash", vec![script.display().to_string()], script)
+    }
+}
+
 /// Run the pinned recipe, with its output directed at `into`.
 fn run_recipe(manifest_dir: &Path, into: &Path) -> Result<(), String> {
-    let script = manifest_dir.join("scripts").join("build-ffmpeg.sh");
+    let (program, args, script) = recipe(manifest_dir);
     println!(
         "cargo:warning=ffmpeg-bundle: building ffmpeg from source into {into:?} \
          (once per version and platform; several minutes)"
     );
-    let status = std::process::Command::new("bash")
-        .arg(&script)
+    let status = std::process::Command::new(program)
+        .args(&args)
         .current_dir(manifest_dir)
         .env("FFMPEG_BUNDLE_BUILD_DIR", into)
         .status()
-        .map_err(|e| format!("ffmpeg-bundle: cannot run {script:?}: {e}"))?;
+        // The PROGRAM, not the script. `Command::status` reports ENOENT about
+        // the thing it tried to execute, and naming the script instead turned
+        // "there is no bash on this machine" into "this file is missing" about
+        // a file that is present — which is how a Windows build spent its
+        // whole diagnosis on the wrong object.
+        .map_err(|e| {
+            format!(
+                "ffmpeg-bundle: cannot run {program} to build the recipe {script:?}: {e}\n\
+                 {program} is what runs the recipe on this platform, and it was not found."
+            )
+        })?;
     if !status.success() {
         return Err(format!(
             "ffmpeg-bundle: {script:?} failed ({status}).\n\
-             It needs make, clang, pkg-config, curl, tar and one of nasm/yasm on PATH."
+             {}",
+            if cfg!(target_os = "windows") {
+                "It needs MSYS2 with mingw-w64-x86_64-gcc, mingw-w64-x86_64-nasm, \
+                 make and pkg-config installed in it."
+            } else {
+                "It needs make, clang, pkg-config, curl, tar and one of nasm/yasm on PATH."
+            }
         ));
     }
     Ok(())
@@ -354,8 +410,14 @@ fn wait_for(dist: &Path) -> bool {
 /// them — there is no second place a flag can change without this noticing.
 fn build_identity(manifest_dir: &Path) -> String {
     let mut hasher = DefaultHasher::new();
-    for file in ["ffmpeg-version.txt", "scripts/build-ffmpeg.sh"] {
-        let path = manifest_dir.join(file);
+    // The pinned version, and THIS platform's recipe — the one that will
+    // actually run. It used to name `build-ffmpeg.sh` outright, which was the
+    // whole answer while that was the only recipe. It stopped being: a change
+    // to the PowerShell recipe would have left every Windows dist addressed by
+    // an identity that had not moved, so the stale one would be reused for
+    // ever and the change would appear to have done nothing.
+    let (_, _, script) = recipe(manifest_dir);
+    for path in [manifest_dir.join("ffmpeg-version.txt"), script] {
         let bytes = std::fs::read(&path)
             .unwrap_or_else(|e| panic!("ffmpeg-bundle: cannot read {path:?}: {e}"));
         bytes.hash(&mut hasher);
@@ -422,6 +484,21 @@ fn verify_archive_platform(path: &std::path::Path) {
              The committed ffmpeg-bundle/dist/ artifacts appear to be for a different platform. \
              Rebuild them from this machine: run `scripts/build-ffmpeg.sh` from the ffmpeg-bundle \
              directory.",
+            path, detected
+        );
+    }
+
+    // Windows was checked for nothing at all, because the check was written as
+    // "is it the object format I want" and there was no marker named for COFF.
+    // The mistake it exists to catch does not need one: what goes wrong is an
+    // archive built on another platform ending up here, and an archive that is
+    // ELF or mach-o is exactly that, whatever COFF looks like.
+    if cfg!(target_os = "windows") && (has_elf || has_macho) {
+        let detected = if has_elf { "ELF (Linux)" } else { "mach-o (macOS)" };
+        panic!(
+            "ffmpeg-bundle: archive {:?} holds {} objects, and this is a Windows build. \
+             The dist it came from was produced on another platform. Delete it and let \
+             `scripts/build-ffmpeg.ps1` run, which needs MSYS2 with MinGW-w64.",
             path, detected
         );
     }
