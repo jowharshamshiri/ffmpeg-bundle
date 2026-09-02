@@ -9,19 +9,26 @@
     minimal feature set, and stages static archives + headers into .\dist\
     - ready for build.rs to link against.
 
-    Build environment: MSYS2 with MinGW-w64 (x86_64).
-    MinGW-w64 produces .a archives matching what build.rs expects.
+    Build environment: MSVC for the compiler, MSYS2 for the shell.
 
-    Install MSYS2 from https://www.msys2.org/, then inside an MSYS2
-    MinGW64 shell run:
-        pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-nasm make pkg-config
+    The archives are MSVC-format, because that is the ABI every consumer
+    links against: the Rust toolchain on Windows is MSVC-hosted, and it has
+    to be, since `rusty_v8` publishes no `x86_64-pc-windows-gnu` build of V8.
+    MinGW archives would not link into any of it.
 
-    Output (mirrors build-ffmpeg.sh):
-        .\dist\lib\libavformat.a
-        .\dist\lib\libavcodec.a
-        .\dist\lib\libavutil.a
-        .\dist\lib\libswscale.a
-        .\dist\lib\libswresample.a
+    MSYS2 supplies bash, make and the POSIX tools `configure` needs. It does
+    NOT supply the compiler.
+
+    Install MSYS2 from https://www.msys2.org/, then:
+        pacman -S --needed make diffutils pkgconf
+    and the Visual Studio Build Tools with the VC workload.
+
+    Output (mirrors build-ffmpeg.sh, with MSVC's names):
+        .\dist\lib\avformat.lib
+        .\dist\lib\avcodec.lib
+        .\dist\lib\avutil.lib
+        .\dist\lib\swscale.lib
+        .\dist\lib\swresample.lib
         .\dist\include\libav*\...
         .\dist\link_flags.txt
         .\dist\ffmpeg-version.txt
@@ -57,13 +64,90 @@ function Invoke-Msys2Bash([string]$Script) {
     try {
         [System.IO.File]::WriteAllText($tmp, $Script)
         $tmpMsys = ConvertTo-MsysPath $tmp
-        $env:MSYSTEM = 'MINGW64'   # selects MinGW-w64 64-bit toolchain
+        # MSYS, not MINGW64. What builds ffmpeg here is MSVC: MSYS2 supplies
+        # the shell, make and the POSIX tools `configure` needs, and nothing
+        # else. Selecting MINGW64 would put a gcc toolchain in front of the
+        # compiler this build actually uses.
+        $env:MSYSTEM = 'MSYS'
+        # The Windows PATH reaches the shell, which is how `cl.exe` and the
+        # declared `nasm` get there. Without it MSYS2 builds its own PATH from
+        # /etc/profile and the compiler is simply absent.
+        $env:MSYS2_PATH_TYPE = 'inherit'
+        # `configure` passes Windows paths to cl.exe. MSYS2 rewrites anything
+        # that looks like a POSIX path in an argument, which turns `/Fo` and
+        # `-I C:\...` into something the compiler does not recognise.
+        $env:MSYS2_ARG_CONV_EXCL = '*'
         & $Bash --login -c "bash '$tmpMsys'"
         if ($LASTEXITCODE -ne 0) {
             throw "MSYS2 script failed (exit $LASTEXITCODE)"
         }
     } finally {
         Remove-Item -Path $tmp -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# Put the MSVC toolchain into THIS process, so everything it starts has it.
+#
+# ffmpeg is built with cl.exe because that is the ABI the consumers link
+# against: the Rust toolchain on Windows is MSVC-hosted, and it is MSVC-hosted
+# because `rusty_v8` publishes no `x86_64-pc-windows-gnu` build of V8 — so a
+# GNU-hosted guest cannot build anything that depends on deno_core, which on
+# this workspace is the workspace's own tool.
+#
+# MinGW archives cannot be linked into an MSVC build, so producing them would
+# make this crate unusable by every consumer that matters. `--toolchain=msvc`
+# is how ffmpeg is told, and vcvars64 is how cl.exe, link.exe, lib.exe and the
+# INCLUDE/LIB search paths get into the environment MSYS2 inherits.
+function Import-MsvcEnvironment {
+    $installer = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (-not (Test-Path -LiteralPath $installer)) {
+        throw @'
+vswhere.exe was not found, so no Visual Studio installation can be located.
+
+ffmpeg is built here with MSVC, because the Rust toolchain that links it is
+MSVC-hosted. Install the Build Tools with the VC workload:
+
+    vs_BuildTools.exe --quiet --wait --norestart --nocache ^
+        --add Microsoft.VisualStudio.Workload.VCTools ^
+        --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64
+'@
+    }
+    # The VC TOOLS component, not merely an installation: a bare Build Tools
+    # install carries no compiler at all, and asking for the installation path
+    # without requiring the workload finds one that cannot build anything.
+    $installation = & $installer -latest -products * `
+        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+        -property installationPath 2>$null
+    if ([string]::IsNullOrWhiteSpace($installation)) {
+        throw ('no Visual Studio installation carries ' +
+               'Microsoft.VisualStudio.Component.VC.Tools.x86.x64, so there is no ' +
+               'cl.exe to build with. Install the VCTools workload.')
+    }
+    $vcvars = Join-Path $installation.Trim() 'VC\Auxiliary\Build\vcvars64.bat'
+    if (-not (Test-Path -LiteralPath $vcvars)) {
+        throw "the Visual Studio at $installation has no vcvars64.bat at $vcvars"
+    }
+    Write-Host "    MSVC       = $installation" -ForegroundColor Green
+
+    # `cmd /c "<bat> && set"` is the only way to read what a batch file did to
+    # its environment: it exits with that environment and prints it, and this
+    # process adopts what it printed.
+    $exported = & cmd.exe /c "`"$vcvars`" >nul 2>&1 && set"
+    if ($LASTEXITCODE -ne 0) {
+        throw "vcvars64.bat failed (exit $LASTEXITCODE); the VC tools are not usable"
+    }
+    foreach ($line in $exported) {
+        if ($line -match '^([^=]+)=(.*)$') {
+            Set-Item -Path "env:$($Matches[1])" -Value $Matches[2]
+        }
+    }
+    foreach ($needed in @('INCLUDE', 'LIB')) {
+        if ([string]::IsNullOrWhiteSpace((Get-Item "env:$needed" -ErrorAction SilentlyContinue).Value)) {
+            throw "vcvars64.bat ran but set no $needed; cl.exe cannot find its headers"
+        }
+    }
+    if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
+        throw 'vcvars64.bat ran but cl.exe is still not on PATH'
     }
 }
 
@@ -148,23 +232,34 @@ foreach ($candidate in $Msys2Candidates) {
 if (-not $Msys2Root) {
     throw @"
 MSYS2 not found. Checked: $($Msys2Candidates -join ', ')
-Install from https://www.msys2.org/, then inside an MSYS2 MinGW64 shell:
-    pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-nasm make pkg-config
+
+MSYS2 supplies the shell, make and the POSIX tools `configure` needs. The
+COMPILER is MSVC and comes from the Visual Studio Build Tools, not from here.
+
+Install from https://www.msys2.org/, then:
+    pacman -S --needed make diffutils pkgconf
 "@
 }
 $Bash = Join-Path $Msys2Root 'usr\bin\bash.exe'
 Write-Host "    MSYS2      = $Msys2Root" -ForegroundColor Green
 
 # ---------------------------------------------------------------------------
-# Verify required tools inside MSYS2 MinGW64
+# Verify required tools in the shell that will run the build
 # ---------------------------------------------------------------------------
+Import-MsvcEnvironment
+
 Write-Host "==> Checking build tools" -ForegroundColor Cyan
+# `cl.exe` and `nasm` come from the WINDOWS side — the compiler from vcvars,
+# the assembler from wherever the machine declares it — and reach the shell
+# because MSYS2 inherits the Windows PATH. `make` and the POSIX tools are
+# MSYS2's own. Asked for in the shell that will run the build, because that is
+# the environment whose answer matters.
 Invoke-Msys2Bash @'
 set -euo pipefail
 missing=0
-for tool in gcc make pkg-config nasm; do
+for tool in cl.exe make nasm diff; do
     if command -v "$tool" >/dev/null 2>&1; then
-        echo "  ok: $tool ($(command -v $tool))"
+        echo "  ok: $tool ($(command -v "$tool"))"
     else
         echo "  MISSING: $tool"
         missing=1
@@ -172,8 +267,10 @@ for tool in gcc make pkg-config nasm; do
 done
 if [ "$missing" -eq 1 ]; then
     echo ""
-    echo "Install missing tools inside an MSYS2 MinGW64 shell:"
-    echo "  pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-nasm make pkg-config"
+    echo "cl.exe comes from the Visual Studio Build Tools (VC workload) and"
+    echo "reaches this shell through the Windows PATH; nasm likewise."
+    echo "The rest are MSYS2's:"
+    echo "  pacman -S --needed make diffutils pkgconf"
     exit 1
 fi
 '@
@@ -230,7 +327,7 @@ if (-not (Test-Path $SourceDir)) {
 }
 
 # ---------------------------------------------------------------------------
-# Configure + Build inside MSYS2 MinGW64
+# Configure + Build: MSVC's compiler, MSYS2's shell
 # ---------------------------------------------------------------------------
 New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
 
@@ -240,6 +337,13 @@ $MsysDistDir      = ConvertTo-MsysPath $DistDir
 $ReconfigureFlag  = if ($Reconfigure) { '1' } else { '0' }
 
 # Feature set mirrors build-ffmpeg.sh exactly.
+#
+# `-MT` is the one addition: the STATIC C runtime. Every consumer of these
+# archives on Windows builds with `-C target-feature=+crt-static`, because a
+# cartridge that drags a VC++ runtime DLL behind it is not self-contained —
+# and mixing the two CRTs is LNK4098 and a program with two heaps, which is
+# worse than either. pdfium's bundle already builds `/MT` for exactly this
+# reason; one runtime across the whole binary or none.
 $BuildScript = @"
 set -euo pipefail
 
@@ -264,7 +368,9 @@ if [ ! -f .configured-$Version ] || [ '$ReconfigureFlag' = '1' ]; then
     '$MsysSourceDir/configure' \
         --prefix='$MsysDistDir' \
         --arch=x86_64 \
-        --target-os=mingw32 \
+        --target-os=win64 \
+        --toolchain=msvc \
+        --extra-cflags=-MT \
         --disable-shared \
         --enable-static \
         --disable-programs \
@@ -289,11 +395,7 @@ if [ ! -f .configured-$Version ] || [ '$ReconfigureFlag' = '1' ]; then
         --enable-swscale \
         --enable-swresample \
         "--enable-encoder=`$ENCODERS" \
-        "--enable-muxer=`$MUXERS" \
-        --cc=gcc \
-        --cxx=g++ \
-        --ld=gcc \
-        --ar=ar
+        "--enable-muxer=`$MUXERS"
     touch .configured-$Version
 fi
 
@@ -303,9 +405,26 @@ make -j"`$CORES"
 
 echo '==> Installing into $MsysDistDir'
 make install
+
+# ffmpeg names its static libraries `libavcodec.a` on every toolchain, MSVC
+# included — the archives ARE MSVC-format, made by lib.exe, but the name is
+# ffmpeg's own convention. `link.exe` looks for `avcodec.lib`, and so does
+# rustc's `cargo:rustc-link-lib=static=avcodec`, so the names are made to say
+# what the files are.
+#
+# Renamed rather than copied: two files holding one archive is two things to
+# keep in step, and the `.a` name means "GNU archive" to everything that reads
+# it.
+echo '==> Naming the archives as MSVC libraries'
+cd '$MsysDistDir/lib'
+for archive in lib*.a; do
+    [ -e "`$archive" ] || continue
+    stem="`${archive#lib}"
+    mv -f "`$archive" "`${stem%.a}.lib"
+done
 "@
 
-Write-Host "==> Configuring and building inside MSYS2 MinGW64" -ForegroundColor Cyan
+Write-Host "==> Configuring and building with MSVC under MSYS2" -ForegroundColor Cyan
 Invoke-Msys2Bash $BuildScript
 
 # ---------------------------------------------------------------------------
@@ -319,13 +438,15 @@ if (Test-Path $PkgconfigDir) { Remove-Item -Recurse -Force $PkgconfigDir }
 # ---------------------------------------------------------------------------
 # Emit link_flags.txt and version stamp
 # ---------------------------------------------------------------------------
-$LinkFlags  = '-Ldist/lib'
-$LinkFlags += ' -lavformat -lavcodec -lswscale -lswresample -lavutil'
-# Windows runtime deps for the MinGW-w64 build:
-#   ws2_32  - Winsock (pipe protocol + some demuxer paths)
-#   bcrypt  - avutil CPRNG on Windows (replaces getrandom/arc4random)
+# The MSVC link line, in MSVC's own spelling. A `-l` line would describe a
+# link nothing on this platform performs.
+#
+#   bcrypt  - avutil's CPRNG (BCryptGenRandom, in place of getrandom)
 #   secur32 - SSPI, pulled in by some avformat paths
-$LinkFlags += ' -lws2_32 -lbcrypt -lsecur32'
+#   ws2_32  - Winsock (the pipe protocol and some demuxer paths)
+$LinkFlags  = '/LIBPATH:dist\lib'
+$LinkFlags += ' avformat.lib avcodec.lib swscale.lib swresample.lib avutil.lib'
+$LinkFlags += ' bcrypt.lib secur32.lib ws2_32.lib'
 
 [System.IO.File]::WriteAllText((Join-Path $DistDir 'link_flags.txt'), $LinkFlags)
 Copy-Item -Path (Join-Path $Root 'ffmpeg-version.txt') `
@@ -344,7 +465,7 @@ foreach ($dir in @('lib', 'include')) {
     }
 }
 
-$Archives = Get-ChildItem -Path (Join-Path $DistDir 'lib') -Filter '*.a' -ErrorAction SilentlyContinue
+$Archives = Get-ChildItem -Path (Join-Path $DistDir 'lib') -Filter '*.lib' -ErrorAction SilentlyContinue
 if ($Archives) {
     $TotalMB = [math]::Round(($Archives | Measure-Object -Property Length -Sum).Sum / 1MB, 1)
     Write-Host ("`n    Total static archive size: {0:N1} MB" -f $TotalMB) -ForegroundColor Green

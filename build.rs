@@ -30,14 +30,16 @@ fn main() {
     let dist = ensure_dist(&manifest_dir);
     let dist_lib = dist.join("lib");
 
-    let archives = [
-        "libavdevice.a",
-        "libavformat.a",
-        "libavcodec.a",
-        "libavutil.a",
-        "libswscale.a",
-        "libswresample.a",
-    ];
+    // What the archives are CALLED, which is the platform's convention and
+    // not ffmpeg's. ffmpeg names its static libraries `libavcodec.a` on every
+    // toolchain including MSVC — the file is an MSVC archive either way — but
+    // `link.exe` looks for `avcodec.lib` and so does rustc's
+    // `link-lib=static=avcodec`, so the Windows recipe renames them and this
+    // reads the names it wrote.
+    let archives: [String; 6] = [
+        "avdevice", "avformat", "avcodec", "avutil", "swscale", "swresample",
+    ]
+    .map(archive_file_name);
 
     // Fingerprint the static archives by hashing (path, mtime, size)
     // for each one. Emitting it as a `cargo:rustc-env=` makes cargo
@@ -159,8 +161,8 @@ fn main() {
     println!("cargo:rustc-link-lib=static=avutil");
 
     // Standard C deps. The minimal config (--disable-autodetect) pulls zlib in
-    // on Unix; the Windows MinGW build has no zlib (verified: no inflate/
-    // deflate symbols in the archives), so z is linked only off-Windows.
+    // on Unix; the Windows build has no zlib (verified: no inflate/deflate
+    // symbols in the archives), so z is linked only off-Windows.
     #[cfg(not(target_os = "windows"))]
     println!("cargo:rustc-link-lib=dylib=z");
 
@@ -171,23 +173,22 @@ fn main() {
 
     #[cfg(target_os = "windows")]
     {
-        // The archives are built with MinGW-w64, so the cartridge is built
-        // with the x86_64-pc-windows-gnu Rust toolchain (ABI-matched). That
-        // toolchain links the MinGW runtime (libgcc / libmingwex / libmsvcrt)
-        // automatically, so we only name the extra libs ffmpeg references,
-        // resolved from the toolchain's MinGW sysroot:
-        //   winpthread - clock_gettime64 / nanosleep64 (av_gettime/av_usleep)
-        //   bcrypt     - avutil CPRNG via BCryptGenRandom
-        //   secur32    - SSPI, pulled in by some avformat paths
-        //   ws2_32     - Winsock (pipe protocol + some demuxers)
-        // These mirror dist/link_flags.txt. We name them with the default
-        // (dynamic) directive; the gcc `-static` link flag in
-        // audiocartridge/.cargo/config.toml then statically links the real
-        // MinGW archive (libwinpthread.a) while leaving the OS system DLLs
-        // (bcrypt/secur32/ws2_32, whose .a are import libs) dynamic - giving a
-        // self-contained cartridge. Using static=winpthread here instead would
-        // make rustc search its own paths (not the MinGW sysroot) and fail.
-        println!("cargo:rustc-link-lib=winpthread");
+        // The archives are MSVC-format, built with cl.exe, because that is the
+        // ABI everything downstream links against: the Rust toolchain on
+        // Windows is MSVC-hosted, and it has to be — `rusty_v8` publishes no
+        // `x86_64-pc-windows-gnu` build of V8, so a GNU-hosted toolchain
+        // cannot build anything that depends on deno_core.
+        //
+        // The MSVC toolchain brings its own C runtime, so nothing is named for
+        // that. What is named is what ffmpeg itself references, and each is a
+        // system import library:
+        //   bcrypt  - avutil's CPRNG via BCryptGenRandom
+        //   secur32 - SSPI, pulled in by some avformat paths
+        //   ws2_32  - Winsock (the pipe protocol and some demuxers)
+        //
+        // `winpthread` is deliberately absent: it is MinGW's pthread shim, and
+        // an MSVC build of ffmpeg uses Win32 threads (`--enable-w32threads`)
+        // and never references it. These mirror dist/link_flags.txt.
         println!("cargo:rustc-link-lib=bcrypt");
         println!("cargo:rustc-link-lib=secur32");
         println!("cargo:rustc-link-lib=ws2_32");
@@ -306,11 +307,26 @@ fn ensure_dist(manifest_dir: &Path) -> PathBuf {
     }
 }
 
+/// One ffmpeg static library's file name on this platform.
+///
+/// `avcodec.lib` on Windows, `libavcodec.a` everywhere else. Windows is the
+/// odd one because its LINKER is: `link.exe` resolves `avcodec` to
+/// `avcodec.lib`, and a file called `libavcodec.a` is a file it will not find
+/// however many MSVC objects are inside it.
+fn archive_file_name(stem: &str) -> String {
+    if cfg!(target_os = "windows") {
+        format!("{stem}.lib")
+    } else {
+        format!("lib{stem}.a")
+    }
+}
+
 /// The recipe for this platform, and the program that runs it.
 ///
 /// Two recipes, because the build environments are not the same shape: a Unix
-/// host has make and clang on PATH, and a Windows host has MSYS2 with
-/// MinGW-w64 inside it, which the PowerShell recipe locates and drives.
+/// host has make and clang on PATH, and a Windows host has the MSVC compiler
+/// from the Build Tools plus MSYS2 for the shell `configure` needs — which the
+/// PowerShell recipe locates and drives.
 ///
 /// The Windows recipe was committed and never referenced. Every Windows build
 /// ran `bash build-ffmpeg.sh`, found no bash, and reported that the SCRIPT
@@ -368,8 +384,8 @@ fn run_recipe(manifest_dir: &Path, into: &Path) -> Result<(), String> {
             "ffmpeg-bundle: {script:?} failed ({status}).\n\
              {}",
             if cfg!(target_os = "windows") {
-                "It needs MSYS2 with mingw-w64-x86_64-gcc, mingw-w64-x86_64-nasm, \
-                 make and pkg-config installed in it."
+                "It needs the Visual Studio Build Tools with the VC workload (cl.exe), \
+                 nasm on PATH, and MSYS2 with make, diffutils and pkgconf."
             } else {
                 "It needs make, clang, pkg-config, curl, tar and one of nasm/yasm on PATH."
             }
@@ -498,7 +514,8 @@ fn verify_archive_platform(path: &std::path::Path) {
         panic!(
             "ffmpeg-bundle: archive {:?} holds {} objects, and this is a Windows build. \
              The dist it came from was produced on another platform. Delete it and let \
-             `scripts/build-ffmpeg.ps1` run, which needs MSYS2 with MinGW-w64.",
+             `scripts/build-ffmpeg.ps1` run, which needs the Visual Studio Build Tools \
+             and MSYS2.",
             path, detected
         );
     }
