@@ -54,7 +54,10 @@ fn main() {
     // because cargo's directory-mtime check varies by filesystem;
     // a per-file (mtime, size) hash is deterministic.
     let mut fingerprint = DefaultHasher::new();
-    for archive in archives {
+    // By reference: these are owned `String`s now, because the file name is
+    // built per platform rather than being a literal. Iterating by value moves
+    // each one into the join and then hashes it below.
+    for archive in &archives {
         let path = dist_lib.join(archive);
         if !path.is_file() {
             // The build ran and reported success, so a missing archive means
