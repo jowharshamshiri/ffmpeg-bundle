@@ -73,10 +73,23 @@ function Invoke-Msys2Bash([string]$Script) {
         # declared `nasm` get there. Without it MSYS2 builds its own PATH from
         # /etc/profile and the compiler is simply absent.
         $env:MSYS2_PATH_TYPE = 'inherit'
-        # `configure` passes Windows paths to cl.exe. MSYS2 rewrites anything
-        # that looks like a POSIX path in an argument, which turns `/Fo` and
-        # `-I C:\...` into something the compiler does not recognise.
-        $env:MSYS2_ARG_CONV_EXCL = '*'
+        # Which arguments MSYS2 must NOT rewrite into Windows paths.
+        #
+        # It converts anything argument-shaped that looks POSIX, and that is
+        # mostly what this build needs: `make` hands cl.exe source paths like
+        # `/c/ProgramData/.../aacdec.c`, and cl.exe reads a leading slash as
+        # an OPTION. Unconverted, every file it was asked to compile arrived
+        # as "Command line warning D9002: ignoring unknown option", it
+        # compiled nothing, and make failed on every object in the tree.
+        #
+        # Excluded from that: cl.exe's own switches, which are spelled with a
+        # leading slash and are not paths -- /Fo, /I, /D, /MT, /nologo.
+        # Rewriting one turns `/MT` into a path to a directory that does not
+        # exist. `-` covers the switches ffmpeg passes in the GNU spelling.
+        #
+        # `*` was here, which excludes EVERYTHING -- and is exactly how the
+        # source paths came through unconverted.
+        $env:MSYS2_ARG_CONV_EXCL = '/Fo;/Fd;/Fe;/Fp;/I;/D;/M;/nologo;/W;/O;/Z;/G;/E;/link;-'
         & $Bash --login -c "bash '$tmpMsys'"
         if ($LASTEXITCODE -ne 0) {
             throw "MSYS2 script failed (exit $LASTEXITCODE)"
