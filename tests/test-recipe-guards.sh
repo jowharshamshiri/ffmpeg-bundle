@@ -224,6 +224,47 @@ refuses to compile even in C11 mode" ;;
 )
 case_result $? "the MSVC configure asks for C11, which is what makes stdatomic.h compile"
 
+echo "TEST9710 — the MSVC recipe converts the paths it hands cl.exe"
+(
+    ps1="$ROOT/scripts/build-ffmpeg.ps1"
+    [ -f "$ps1" ] || fail "the Windows recipe is missing at $ps1"
+
+    excl=$(grep -o "MSYS2_ARG_CONV_EXCL = '[^']*'" "$ps1" | head -1)
+    [ -n "$excl" ] || fail "the MSVC recipe sets no MSYS2_ARG_CONV_EXCL at all"
+
+    # `*` excludes everything, so make's source paths reach cl.exe as
+    # `/c/ProgramData/...` and it reads the leading slash as an option:
+    # "D9002: ignoring unknown option" for every file, and nothing compiled.
+    case "$excl" in
+        *"'*'"*|*';*;'*|*"='*"*) fail "MSYS2_ARG_CONV_EXCL excludes everything ($excl); \
+no path is converted and cl.exe is handed POSIX paths it cannot resolve" ;;
+    esac
+
+    # A bare `-` is the same mistake one level down: ffmpeg's include flags
+    # are GNU-spelled and carry the path INLINE. common.mak builds
+    # `IFLAGS := -I. -I$(SRC_LINK)/`, so excluding `-` hands cl.exe
+    # `-I/c/ProgramData/...` and every source fails to find libavutil/*.h --
+    # a wall of C1083 that reads like a broken checkout.
+    case ";$excl;" in
+        *";-;"*|*"';-'"*) fail "MSYS2_ARG_CONV_EXCL excludes every GNU-spelled \
+argument ($excl); ffmpeg's -I flags carry their path inline and would not be \
+converted" ;;
+    esac
+    printf '%s' "$excl" | grep -qE "(^|;)/I(;|')" \
+        && fail "MSYS2_ARG_CONV_EXCL excludes /I ($excl); an include path that \
+is not converted is one cl.exe cannot open"
+
+    # And the switches that are never paths must still be excluded, or `/MT`
+    # becomes a path to a directory that does not exist.
+    for switch in /Fo /D /nologo /link; do
+        printf '%s' "$excl" | grep -q -- "$switch" \
+            || fail "MSYS2_ARG_CONV_EXCL no longer excludes $switch ($excl); \
+converting a switch that is not a path breaks the compile another way"
+    done
+    exit 0
+)
+case_result $? "only arguments that carry paths are left for MSYS2 to convert"
+
 echo
 echo "${PASSED} passed, ${FAILED} failed"
 [ "$FAILED" -eq 0 ]

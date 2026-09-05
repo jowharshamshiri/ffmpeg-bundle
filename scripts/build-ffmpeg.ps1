@@ -83,13 +83,25 @@ function Invoke-Msys2Bash([string]$Script) {
         # compiled nothing, and make failed on every object in the tree.
         #
         # Excluded from that: cl.exe's own switches, which are spelled with a
-        # leading slash and are not paths -- /Fo, /I, /D, /MT, /nologo.
-        # Rewriting one turns `/MT` into a path to a directory that does not
-        # exist. `-` covers the switches ffmpeg passes in the GNU spelling.
+        # leading slash and are not paths -- /Fo, /D, /MT, /nologo. Rewriting
+        # one turns `/MT` into a path to a directory that does not exist.
         #
-        # `*` was here, which excludes EVERYTHING -- and is exactly how the
-        # source paths came through unconverted.
-        $env:MSYS2_ARG_CONV_EXCL = '/Fo;/Fd;/Fe;/Fp;/I;/D;/M;/nologo;/W;/O;/Z;/G;/E;/link;-'
+        # `*` was here first, which excludes EVERYTHING -- and is exactly how
+        # the source paths came through unconverted.
+        #
+        # Then `-` and `/I` were here, which is the same mistake one level
+        # down. ffmpeg's own include flags are GNU-spelled and carry the path
+        # INLINE: common.mak builds `IFLAGS := -I. -I$(SRC_LINK)/` and
+        # SRC_LINK is `/c/ProgramData/...`, so excluding `-` handed cl.exe
+        # `-I/c/ProgramData/...`, which it cannot resolve. Every source then
+        # failed to find `libavutil/avassert.h` and friends -- a wall of C1083
+        # that reads like a broken checkout and is a path this line refused to
+        # translate.
+        #
+        # So only switches that are NEVER paths are listed, in both spellings.
+        # Anything carrying a path -- `-I`, `-L`, a source file -- is left for
+        # MSYS2 to convert, which is the whole reason it is in the loop.
+        $env:MSYS2_ARG_CONV_EXCL = '/Fo;/Fd;/Fe;/Fp;/D;/M;/nologo;/W;/O;/Z;/G;/E;/link;-D;-W;-O;-std;-m;-f;-g;-pthread'
         & $Bash --login -c "bash '$tmpMsys'"
         if ($LASTEXITCODE -ne 0) {
             throw "MSYS2 script failed (exit $LASTEXITCODE)"
