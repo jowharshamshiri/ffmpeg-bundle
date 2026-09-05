@@ -14,7 +14,7 @@ dependencies = [
 
 [[package]]
 name = "ffmpeg-bundle"
-version = "1.36.7"
+version = "1.37.11"
 dependencies = [
  "cc",
 ]
