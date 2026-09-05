@@ -376,15 +376,25 @@ cd '$MsysBuildDir'
 # configure killed after that point left the file behind and every later run
 # skipped configuring entirely.
 #
-# -std:c11 belongs with -MT, and is not optional. ffmpeg 7.x includes
-# <stdatomic.h>, and MSVC's own vcruntime_c11_stdatomic.h opens with
+# --stdc=c11 is not optional, and it is an OPTION rather than a cflag.
+#
+# ffmpeg 7.x includes <stdatomic.h>, and MSVC's own vcruntime_c11_stdatomic.h
+# opens with
 #     #error "C atomic support is not enabled"
 # unless the translation unit is compiled as C11. Without it, configure's
 # `check_builtin stdatomic` fails (config.h then carries no HAVE_STDATOMIC_H)
-# and the build dies on the first source that pulls the header in. The
-# C1083 "cannot open libavutil/avassert.h" errors that come with it are
-# downstream noise from the aborted compile, not a missing include path —
-# chasing those instead of this line costs a day.
+# and the build dies on the first source that pulls the header in.
+#
+# Passing it through --extra-cflags does NOT work: configure defaults to
+# `stdc_default="c17"` and appends its own -std AFTER the extra cflags, so
+# cl.exe reported
+#     warning D9025 : overriding '/std:c11' with '/std:c17'
+# on every file and compiled as C17 regardless. --stdc sets the value
+# configure itself uses, which is the only spelling that survives.
+#
+# The C1083 "cannot open libavutil/avassert.h" errors that come with the
+# failure are downstream noise from the aborted compile, not a missing
+# include path — chasing those instead of this line costs a day.
 if [ ! -f .configured-$Version ] || [ '$ReconfigureFlag' = '1' ]; then
     echo '==> Configuring'
     rm -f .configured-$Version
@@ -393,7 +403,8 @@ if [ ! -f .configured-$Version ] || [ '$ReconfigureFlag' = '1' ]; then
         --arch=x86_64 \
         --target-os=win64 \
         --toolchain=msvc \
-        "--extra-cflags=-MT -std:c11" \
+        --stdc=c11 \
+        --extra-cflags=-MT \
         --disable-shared \
         --enable-static \
         --disable-programs \

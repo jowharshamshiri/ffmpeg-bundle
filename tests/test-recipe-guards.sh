@@ -175,18 +175,34 @@ echo "TEST9709 — the MSVC recipe compiles as C11, so <stdatomic.h> is usable"
     # build dies on the first file that pulls the header in — behind a wall of
     # C1083 "cannot open libavutil/..." errors that name the wrong problem.
     #
+    # It must be the --stdc OPTION, not a cflag. configure defaults to
+    # stdc_default="c17" and appends its own -std after --extra-cflags, so the
+    # cflag spelling loses to `warning D9025: overriding '/std:c11' with
+    # '/std:c17'` on every file. Asserting the option is what distinguishes
+    # the fix that works from the one that looks right and compiles as C17.
+    #
     # Read off the recipe rather than a real build: configuring ffmpeg with
     # MSVC takes minutes and needs Windows, and the decision under test is one
-    # line of the recipe. Dropping -std:c11 fails here.
+    # line of the recipe.
+    # The configure ARGUMENT, not the prose about it: a line that is passed to
+    # configure is indented and ends in a backslash continuation, while the
+    # comment above it says `--stdc=c11` too. Matching anywhere in the file let
+    # the flag be deleted with the comment left behind and this still passed.
+    grep -qE '^[[:space:]]+--stdc=c11[[:space:]]*\\' "$ps1" \
+        || fail "the MSVC recipe does not pass --stdc=c11 to configure; ffmpeg's \
+<stdatomic.h> will not compile under MSVC, and an -std:c11 in --extra-cflags is \
+overridden by configure's own c17 default"
+
+    # A cflag spelling alone is the mistake this guards against: it is silently
+    # overridden, so a recipe carrying only that is not configured for C11.
     cflags="$(grep -o -- '--extra-cflags=[^\\]*' "$ps1" | head -1)"
     [ -n "$cflags" ] || fail "the MSVC recipe passes no --extra-cflags at all"
     case "$cflags" in
-        *-std:c11*) : ;;
-        *) fail "the MSVC recipe does not compile as C11 ($cflags); \
-ffmpeg's <stdatomic.h> will not compile under MSVC without -std:c11" ;;
+        *-std:c11*) fail "the MSVC recipe sets -std:c11 through --extra-cflags, \
+which configure's c17 default overrides; --stdc=c11 is the setting that holds" ;;
     esac
 
-    # -MT selects the static runtime, and losing it while adding the standard
+    # -MT selects the static runtime, and losing it while moving the standard
     # would trade one broken link for another.
     case "$cflags" in
         *-MT*) : ;;
