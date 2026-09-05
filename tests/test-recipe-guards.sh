@@ -266,5 +266,47 @@ converting a switch that is not a path breaks the compile another way"
 case_result $? "only arguments that carry paths are left for MSYS2 to convert"
 
 echo
+echo "TEST9711 — every platform's recipe builds the capture backend"
+(
+    ps1="$ROOT/scripts/build-ffmpeg.ps1"
+    sh="$ROOT/scripts/build-ffmpeg.sh"
+    [ -f "$ps1" ] && [ -f "$sh" ] || fail "a recipe is missing"
+
+    # build.rs links avdevice unconditionally, and capture -- microphones and
+    # cameras -- is part of what this crate delivers. A platform that disables
+    # it ships a dist the crate cannot link, which is how a perfectly compiled
+    # Windows build ended on "avdevice.lib is missing after a successful
+    # build". Dropping avdevice from the list would have made the message go
+    # away by making the gap permanent.
+    # The configure ARGUMENTS, not the prose about them: a comment explaining
+    # why avdevice is enabled says `--disable-avdevice` too, and matching
+    # anywhere in the file would read that as the flag.
+    grep -qE '^[[:space:]]+--enable-avdevice' "$sh" \
+        || fail "the POSIX recipe no longer enables avdevice; build.rs links it"
+    grep -qE '^[[:space:]]+--enable-avdevice' "$ps1" \
+        || fail "the MSVC recipe no longer enables avdevice; build.rs links it"
+    grep -qE '^[[:space:]]+--disable-avdevice' "$ps1" \
+        && fail "the MSVC recipe disables avdevice while build.rs links it: \
+that dist cannot be linked, and Windows would ship with no capture at all"
+
+    # An indev per platform, because avdevice with no input device opens
+    # nothing. dshow is the Windows equivalent of alsa/v4l2 and avfoundation.
+    grep -qE '^[[:space:]]+--enable-indev=dshow' "$ps1" \
+        || fail "the MSVC recipe enables avdevice but no input device, so it \
+can open neither a microphone nor a camera"
+    grep -qE -- "--enable-indev=(alsa|avfoundation)" "$sh" \
+        || fail "the POSIX recipe enables avdevice but no input device"
+
+    # And the request is VERIFIED. configure drops an indev whose dependencies
+    # it cannot find and says so only in config.log, so a build can report
+    # success and ship a libavdevice that opens nothing.
+    grep -q "CONFIG_DSHOW_INDEV=yes" "$ps1" \
+        || fail "the MSVC recipe does not check that configure kept dshow; \
+--enable-indev is a request, and a dropped one is silent"
+    exit 0
+)
+case_result $? "avdevice and an input device are built on every platform, and checked"
+
+echo
 echo "${PASSED} passed, ${FAILED} failed"
 [ "$FAILED" -eq 0 ]

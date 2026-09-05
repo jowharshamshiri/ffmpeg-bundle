@@ -189,12 +189,28 @@ fn main() {
         //   secur32 - SSPI, pulled in by some avformat paths
         //   ws2_32  - Winsock (the pipe protocol and some demuxers)
         //
+        // And what the dshow indev is made of, which is what capture COSTS on
+        // this platform — the counterpart of `asound` on Linux and the
+        // AVFoundation frameworks on macOS. These are what ffmpeg's own
+        // `dshow_indev_extralibs` names:
+        //   strmiids, ole32, oleaut32, uuid - DirectShow and the COM it is
+        //                                     built on
+        //   psapi                           - process enumeration, used to
+        //                                     name devices
+        //   shlwapi                         - path handling in the same indev
+        //
         // `winpthread` is deliberately absent: it is MinGW's pthread shim, and
         // an MSVC build of ffmpeg uses Win32 threads (`--enable-w32threads`)
         // and never references it. These mirror dist/link_flags.txt.
         println!("cargo:rustc-link-lib=bcrypt");
         println!("cargo:rustc-link-lib=secur32");
         println!("cargo:rustc-link-lib=ws2_32");
+        println!("cargo:rustc-link-lib=strmiids");
+        println!("cargo:rustc-link-lib=ole32");
+        println!("cargo:rustc-link-lib=oleaut32");
+        println!("cargo:rustc-link-lib=uuid");
+        println!("cargo:rustc-link-lib=psapi");
+        println!("cargo:rustc-link-lib=shlwapi");
     }
 
     #[cfg(target_os = "macos")]

@@ -388,6 +388,24 @@ cd '$MsysBuildDir'
 # configure killed after that point left the file behind and every later run
 # skipped configuring entirely.
 #
+# libavdevice is ENABLED here, with the dshow input device.
+#
+# The live-capture backends: the audio and video cartridges open microphones
+# and cameras through avdevice input formats -- alsa and v4l2 on Linux,
+# avfoundation on macOS, and dshow here, which is the Windows equivalent of
+# both at once.
+#
+# This said `--disable-avdevice`, while build.rs links avdevice
+# unconditionally, so a Windows build that compiled perfectly ended on
+# "avdevice.lib is missing after a successful build". The archive list was not
+# wrong. Capture is part of what this crate delivers, and a platform quietly
+# shipping without it is the divergence — dropping avdevice from the list
+# would have made the error go away by making the gap permanent.
+#
+# The members are checked after the build, the way the POSIX recipe checks for
+# its alsa and avfoundation members: `--enable-indev=dshow` is a REQUEST, and
+# configure answers it silently when a dependency is missing.
+#
 # ffmpeg 7.x includes <stdatomic.h>, and MSVC needs BOTH of the settings
 # below to compile it. They are separate switches guarding separate lines of
 # vcruntime_c11_stdatomic.h, and either one alone still fails:
@@ -440,7 +458,8 @@ if [ ! -f .configured-$Version ] || [ '$ReconfigureFlag' = '1' ]; then
         --disable-network \
         --disable-autodetect \
         --disable-avfilter \
-        --disable-avdevice \
+        --enable-avdevice \
+        --enable-indev=dshow \
         --disable-everything \
         --enable-w32threads \
         "--enable-decoder=`$DECODERS" \
@@ -461,6 +480,28 @@ make -j"`$CORES"
 
 echo '==> Installing into $MsysDistDir'
 make install
+
+# The dshow indev is THERE, checked rather than assumed.
+#
+# `--enable-indev=dshow` is a request. configure drops an indev whose
+# dependencies it could not find and says so only in config.log, so a build
+# that reported success could still ship a libavdevice with no way to open a
+# microphone — and nothing would notice until a capture cartridge failed on a
+# user's machine. The POSIX recipe checks its alsa and avfoundation members
+# for the same reason.
+echo '==> Checking the capture backend survived configure'
+if ! grep -q 'CONFIG_DSHOW_INDEV=yes' '$MsysBuildDir/ffbuild/config.mak'; then
+    echo "ERROR: the dshow indev was dropped by configure — this dist has no" >&2
+    echo "microphone or camera capture. See ffbuild/config.log for the check" >&2
+    echo "that failed; the Windows SDK headers it needs come with the VC" >&2
+    echo "workload." >&2
+    exit 1
+fi
+if ! ar t '$MsysDistDir/lib/libavdevice.a' | grep -q '^dshow'; then
+    echo "ERROR: built libavdevice.a contains no dshow members — capture was" >&2
+    echo "dropped after configure agreed to it." >&2
+    exit 1
+fi
 
 # ffmpeg names its static libraries `libavcodec.a` on every toolchain, MSVC
 # included — the archives ARE MSVC-format, made by lib.exe, but the name is
@@ -500,9 +541,18 @@ if (Test-Path $PkgconfigDir) { Remove-Item -Recurse -Force $PkgconfigDir }
 #   bcrypt  - avutil's CPRNG (BCryptGenRandom, in place of getrandom)
 #   secur32 - SSPI, pulled in by some avformat paths
 #   ws2_32  - Winsock (the pipe protocol and some demuxer paths)
+#
+# The dshow indev's own dependencies, which are what capture is made of. They
+# are what `dshow_indev_extralibs` names in ffmpeg's configure, in MSVC's
+# spelling: DirectShow itself (strmiids, ole32, oleaut32, uuid), the process
+# enumeration it uses to name devices (psapi), and shlwapi.
+#
+# avdevice.lib goes FIRST, ahead of avformat: the linker resolves left to
+# right and avdevice depends on the rest.
 $LinkFlags  = '/LIBPATH:dist\lib'
-$LinkFlags += ' avformat.lib avcodec.lib swscale.lib swresample.lib avutil.lib'
+$LinkFlags += ' avdevice.lib avformat.lib avcodec.lib swscale.lib swresample.lib avutil.lib'
 $LinkFlags += ' bcrypt.lib secur32.lib ws2_32.lib'
+$LinkFlags += ' strmiids.lib ole32.lib oleaut32.lib uuid.lib psapi.lib shlwapi.lib'
 
 [System.IO.File]::WriteAllText((Join-Path $DistDir 'link_flags.txt'), $LinkFlags)
 Copy-Item -Path (Join-Path $Root 'ffmpeg-version.txt') `
