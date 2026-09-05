@@ -3,20 +3,25 @@
 sources/
 build/
 
-# Cargo build outputs for this crate's compile (not the staged dist/).
+# Cargo build outputs for this crate's compile.
 target/
 
-# dist/ is DELIBERATELY NOT IGNORED.
+# dist/ is a BUILD OUTPUT and is not committed.
 #
-# This crate's contract is that the static archives are present: build.rs
-# panics rather than falling back on a system ffmpeg, so a consumer that
-# resolves this crate from a git tag gets a checkout it cannot build unless
-# dist/ is committed. A cargo git checkout is not a place a build script can
-# be run, so "run scripts/build-ffmpeg.sh first" is not available to them.
+# It once had to be. The archives are this crate's whole contract — build.rs
+# panics rather than falling back on a system ffmpeg — and a cargo git
+# checkout is not a place a build script can run, so a consumer resolving a
+# git tag needed the archives already there.
 #
-# This file previously carried that reasoning as a comment and then ignored
-# dist/ on the next line, which is how the tagged releases came to contain no
-# archives at all.
+# build.rs no longer works that way. `ensure_dist` builds into OUT_DIR (or
+# $FFMPEG_BUNDLE_BUILD_DIR) at `dist-<identity>`, content-addressed by ffmpeg
+# version, recipe and platform, and runs the recipe from source when that is
+# absent — under a lock, so parallel cargo invocations compile it once. It
+# never reads dist/ from the source tree.
 #
-# To rebuild from source (bumping ffmpeg-version.txt, changing the configure
-# flags), run scripts/build-ffmpeg.sh and commit the regenerated dist/.
+# So committing dist/ now adds ~74MB of binaries per rebuild that nothing
+# reads, and it can only ever hold ONE platform: a macOS dist/ carries
+# libav*.a and `-framework VideoToolbox`, which is not what a Windows
+# consumer links against. Per-platform is exactly what the content-addressed
+# cache exists to do.
+dist/

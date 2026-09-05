@@ -164,6 +164,38 @@ echo "TEST9708 — the release tarball is fetched from the www host"
 )
 case_result $? "the fetch names www.ffmpeg.org, not the apex"
 
+echo "TEST9709 — the MSVC recipe compiles as C11, so <stdatomic.h> is usable"
+(
+    ps1="$ROOT/scripts/build-ffmpeg.ps1"
+    [ -f "$ps1" ] || fail "the Windows recipe is missing at $ps1"
+
+    # ffmpeg 7.x includes <stdatomic.h>. MSVC's vcruntime_c11_stdatomic.h is
+    # `#error "C atomic support is not enabled"` unless the unit is compiled as
+    # C11, so a configure that omits it fails `check_builtin stdatomic` and the
+    # build dies on the first file that pulls the header in — behind a wall of
+    # C1083 "cannot open libavutil/..." errors that name the wrong problem.
+    #
+    # Read off the recipe rather than a real build: configuring ffmpeg with
+    # MSVC takes minutes and needs Windows, and the decision under test is one
+    # line of the recipe. Dropping -std:c11 fails here.
+    cflags="$(grep -o -- '--extra-cflags=[^\\]*' "$ps1" | head -1)"
+    [ -n "$cflags" ] || fail "the MSVC recipe passes no --extra-cflags at all"
+    case "$cflags" in
+        *-std:c11*) : ;;
+        *) fail "the MSVC recipe does not compile as C11 ($cflags); \
+ffmpeg's <stdatomic.h> will not compile under MSVC without -std:c11" ;;
+    esac
+
+    # -MT selects the static runtime, and losing it while adding the standard
+    # would trade one broken link for another.
+    case "$cflags" in
+        *-MT*) : ;;
+        *) fail "the MSVC recipe no longer selects the static runtime ($cflags)" ;;
+    esac
+    exit 0
+)
+case_result $? "the MSVC configure asks for C11, which is what makes stdatomic.h compile"
+
 echo
 echo "${PASSED} passed, ${FAILED} failed"
 [ "$FAILED" -eq 0 ]

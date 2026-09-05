@@ -386,11 +386,21 @@ fn run_recipe(manifest_dir: &Path, into: &Path) -> Result<(), String> {
         return Err(format!(
             "ffmpeg-bundle: {script:?} failed ({status}).\n\
              {}",
+            // What it NEEDS, not what is wrong: the recipe checks each tool and
+            // prints `ok: <tool>` for the ones it found, so by the time this
+            // runs the tools are usually all present and the failure is further
+            // in. Stating a missing toolchain as the reason sent a whole
+            // diagnosis after tools that were never absent; the compiler error
+            // above this line is the thing to read.
             if cfg!(target_os = "windows") {
-                "It needs the Visual Studio Build Tools with the VC workload (cl.exe), \
-                 nasm on PATH, and MSYS2 with make, diffutils and pkgconf."
+                "The recipe's own output above says where it stopped. It requires the \
+                 Visual Studio Build Tools with the VC workload (cl.exe), nasm on PATH, \
+                 and MSYS2 with make, diffutils and pkgconf — it reports each as `ok:` \
+                 when it finds it, so a failure after those lines is a build error, not \
+                 a missing tool."
             } else {
-                "It needs make, clang, pkg-config, curl, tar and one of nasm/yasm on PATH."
+                "The recipe's own output above says where it stopped. It requires make, \
+                 clang, pkg-config, curl, tar and one of nasm/yasm on PATH."
             }
         ));
     }
