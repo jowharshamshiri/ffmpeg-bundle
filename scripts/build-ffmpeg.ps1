@@ -497,7 +497,15 @@ if ! grep -q 'CONFIG_DSHOW_INDEV=yes' '$MsysBuildDir/ffbuild/config.mak'; then
     echo "workload." >&2
     exit 1
 fi
-if ! ar t '$MsysDistDir/lib/libavdevice.a' | grep -q '^dshow'; then
+# The member names are read out of the archive with grep, not with `ar`.
+#
+# MSYS2 has no binutils: `ar`, `nm` and `strings` are all absent, so the check
+# died on "ar: command not found" and reported the capture backend as missing
+# when it was there. An `ar` archive stores each member's NAME in plain text in
+# its header, and this archive was made by lib.exe from objects called
+# `dshow_*.o` — so the name is in the file either way, and grep finds it
+# without a tool this machine does not have.
+if ! grep -qa 'dshow' '$MsysDistDir/lib/libavdevice.a'; then
     echo "ERROR: built libavdevice.a contains no dshow members — capture was" >&2
     echo "dropped after configure agreed to it." >&2
     exit 1

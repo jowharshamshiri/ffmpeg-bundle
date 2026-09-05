@@ -303,6 +303,17 @@ can open neither a microphone nor a camera"
     grep -q "CONFIG_DSHOW_INDEV=yes" "$ps1" \
         || fail "the MSVC recipe does not check that configure kept dshow; \
 --enable-indev is a request, and a dropped one is silent"
+
+    # And the check must use tools the guest HAS. MSYS2 ships no binutils, so
+    # `ar`, `nm` and `strings` are all absent there: the members check died on
+    # "ar: command not found" and reported capture as missing when it was
+    # built. A verification that cannot run is worse than none, because it
+    # fails the build for the thing it was meant to confirm.
+    for absent in "ar " "nm " "strings "; do
+        grep -qE "^[[:space:]]*(if !? ?)?$absent" "$ps1" \
+            && fail "the MSVC recipe runs \`$absent\` — MSYS2 has no binutils, \
+so that check cannot run on the guest it is checking"
+    done
     exit 0
 )
 case_result $? "avdevice and an input device are built on every platform, and checked"
