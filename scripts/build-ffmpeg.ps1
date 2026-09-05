@@ -376,25 +376,35 @@ cd '$MsysBuildDir'
 # configure killed after that point left the file behind and every later run
 # skipped configuring entirely.
 #
-# --stdc=c11 is not optional, and it is an OPTION rather than a cflag.
+# ffmpeg 7.x includes <stdatomic.h>, and MSVC needs BOTH of the settings
+# below to compile it. They are separate switches guarding separate lines of
+# vcruntime_c11_stdatomic.h, and either one alone still fails:
 #
-# ffmpeg 7.x includes <stdatomic.h>, and MSVC's own vcruntime_c11_stdatomic.h
-# opens with
-#     #error "C atomic support is not enabled"
-# unless the translation unit is compiled as C11. Without it, configure's
-# `check_builtin stdatomic` fails (config.h then carries no HAVE_STDATOMIC_H)
-# and the build dies on the first source that pulls the header in.
+#     #ifdef __STDC_NO_ATOMICS__
+#     #error "C atomic support is not enabled"     <- -experimental:c11atomics
+#     #endif
+#     #if __STDC_VERSION__ < 201112L
+#     #error "C atomics require C11 or later"      <- --stdc=c11
+#     #endif
 #
-# Passing it through --extra-cflags does NOT work: configure defaults to
-# `stdc_default="c17"` and appends its own -std AFTER the extra cflags, so
-# cl.exe reported
-#     warning D9025 : overriding '/std:c11' with '/std:c17'
-# on every file and compiled as C17 regardless. --stdc sets the value
-# configure itself uses, which is the only spelling that survives.
+# 1. --stdc=c11, as an OPTION and not a cflag. configure defaults to
+#    `stdc_default="c17"` and appends its own -std AFTER --extra-cflags, so
+#    the cflag spelling produced
+#        warning D9025 : overriding '/std:c11' with '/std:c17'
+#    on every file and compiled as C17 regardless. --stdc sets the value
+#    configure itself uses, which is the spelling that survives.
 #
-# The C1083 "cannot open libavutil/avassert.h" errors that come with the
-# failure are downstream noise from the aborted compile, not a missing
-# include path — chasing those instead of this line costs a day.
+# 2. -experimental:c11atomics in the cflags. C11 mode alone leaves MSVC
+#    defining __STDC_NO_ATOMICS__ — atomics are opt-in separately — so the
+#    build still died on the FIRST of those two #errors after --stdc landed.
+#    This one is safe in --extra-cflags precisely because it is not a -std
+#    flag, so nothing appended later overrides it.
+#
+# Without both, configure's `check_builtin stdatomic` fails, config.h carries
+# no HAVE_STDATOMIC_H, and the build dies on the first source that pulls the
+# header in. The C1083 "cannot open libavutil/avassert.h" errors alongside it
+# are downstream noise from the aborted compile, not a missing include path —
+# chasing those instead of these two lines costs a day.
 if [ ! -f .configured-$Version ] || [ '$ReconfigureFlag' = '1' ]; then
     echo '==> Configuring'
     rm -f .configured-$Version
@@ -404,7 +414,7 @@ if [ ! -f .configured-$Version ] || [ '$ReconfigureFlag' = '1' ]; then
         --target-os=win64 \
         --toolchain=msvc \
         --stdc=c11 \
-        --extra-cflags=-MT \
+        "--extra-cflags=-MT -experimental:c11atomics" \
         --disable-shared \
         --enable-static \
         --disable-programs \

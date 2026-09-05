@@ -193,13 +193,25 @@ echo "TEST9709 — the MSVC recipe compiles as C11, so <stdatomic.h> is usable"
 <stdatomic.h> will not compile under MSVC, and an -std:c11 in --extra-cflags is \
 overridden by configure's own c17 default"
 
-    # A cflag spelling alone is the mistake this guards against: it is silently
-    # overridden, so a recipe carrying only that is not configured for C11.
-    cflags="$(grep -o -- '--extra-cflags=[^\\]*' "$ps1" | head -1)"
+    # A cflag spelling of the STANDARD is the mistake this guards against: it
+    # is silently overridden, so a recipe carrying only that is not C11.
+    cflags="$(grep -o -- '--extra-cflags=[^\\"]*' "$ps1" | head -1)"
     [ -n "$cflags" ] || fail "the MSVC recipe passes no --extra-cflags at all"
     case "$cflags" in
         *-std:c11*) fail "the MSVC recipe sets -std:c11 through --extra-cflags, \
 which configure's c17 default overrides; --stdc=c11 is the setting that holds" ;;
+    esac
+
+    # C11 mode is not enough on its own. MSVC keeps defining __STDC_NO_ATOMICS__
+    # until atomics are opted into separately, and that is the FIRST of the two
+    # #errors in vcruntime_c11_stdatomic.h — so --stdc=c11 alone still failed.
+    # It belongs in the cflags: not being a -std flag is what keeps configure
+    # from overriding it.
+    case "$cflags" in
+        *-experimental:c11atomics*) : ;;
+        *) fail "the MSVC recipe does not enable C11 atomics ($cflags); MSVC \
+defines __STDC_NO_ATOMICS__ without -experimental:c11atomics and <stdatomic.h> \
+refuses to compile even in C11 mode" ;;
     esac
 
     # -MT selects the static runtime, and losing it while moving the standard
