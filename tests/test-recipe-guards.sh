@@ -319,5 +319,52 @@ so that check cannot run on the guest it is checking"
 case_result $? "avdevice and an input device are built on every platform, and checked"
 
 echo
+echo "TEST9712 — the bash the MSVC recipe generates has no PowerShell escapes in it"
+(
+    ps1="$ROOT/scripts/build-ffmpeg.ps1"
+    [ -f "$ps1" ] || fail "the MSVC recipe is missing"
+    stray=$(mktemp)
+    trap 'rm -f "$stray"' EXIT
+
+    # $BuildScript is an INTERPOLATING here-string: PowerShell reads every
+    # character of it before bash ever does, and the backtick is PowerShell
+    # escape character. So a backtick in that block is not punctuation, it is
+    # an instruction to drop the next character.
+    #
+    # Prose is where this bites, because prose is where nobody is thinking
+    # about the shell. The word nm written between backticks reached bash as
+    # nm with the n eaten; bash ran what was left and the whole ffmpeg build
+    # died on "line 131: m: command not found", pointing at a COMMENT. Two
+    # suites failed for an hour on a message about a file that was fine.
+    #
+    # `$ is the one legitimate use: it escapes the dollar so a bash variable
+    # survives interpolation. Everything else is refused.
+    awk '
+        /^\$BuildScript = @"$/ { inside = 1; next }
+        inside && /^"@$/       { inside = 0 }
+        inside {
+            line = $0
+            n = 0
+            while ((i = index(line, "`")) > 0) {
+                rest = substr(line, i + 1, 1)
+                if (rest != "$") { n++ }
+                line = substr(line, i + 2)
+            }
+            if (n > 0) { print NR ": " $0 }
+        }
+    ' "$ps1" > "$stray"
+
+    if [ -s "$stray" ]; then
+        while IFS= read -r offending; do
+            echo "        $offending"
+        done < "$stray"
+        fail "the generated bash carries PowerShell escapes: each backtick above \
+eats the character after it before bash sees the line"
+    fi
+    exit 0
+)
+case_result $? "the generated bash carries no PowerShell escapes"
+
+echo
 echo "${PASSED} passed, ${FAILED} failed"
 [ "$FAILED" -eq 0 ]

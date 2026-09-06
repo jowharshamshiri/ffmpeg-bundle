@@ -395,7 +395,7 @@ cd '$MsysBuildDir'
 # avfoundation on macOS, and dshow here, which is the Windows equivalent of
 # both at once.
 #
-# This said `--disable-avdevice`, while build.rs links avdevice
+# This said --disable-avdevice, while build.rs links avdevice
 # unconditionally, so a Windows build that compiled perfectly ended on
 # "avdevice.lib is missing after a successful build". The archive list was not
 # wrong. Capture is part of what this crate delivers, and a platform quietly
@@ -403,7 +403,7 @@ cd '$MsysBuildDir'
 # would have made the error go away by making the gap permanent.
 #
 # The members are checked after the build, the way the POSIX recipe checks for
-# its alsa and avfoundation members: `--enable-indev=dshow` is a REQUEST, and
+# its alsa and avfoundation members: --enable-indev=dshow is a REQUEST, and
 # configure answers it silently when a dependency is missing.
 #
 # ffmpeg 7.x includes <stdatomic.h>, and MSVC needs BOTH of the settings
@@ -418,7 +418,7 @@ cd '$MsysBuildDir'
 #     #endif
 #
 # 1. --stdc=c11, as an OPTION and not a cflag. configure defaults to
-#    `stdc_default="c17"` and appends its own -std AFTER --extra-cflags, so
+#    stdc_default="c17" and appends its own -std AFTER --extra-cflags, so
 #    the cflag spelling produced
 #        warning D9025 : overriding '/std:c11' with '/std:c17'
 #    on every file and compiled as C17 regardless. --stdc sets the value
@@ -430,7 +430,7 @@ cd '$MsysBuildDir'
 #    This one is safe in --extra-cflags precisely because it is not a -std
 #    flag, so nothing appended later overrides it.
 #
-# Without both, configure's `check_builtin stdatomic` fails, config.h carries
+# Without both, configure's check_builtin stdatomic fails, config.h carries
 # no HAVE_STDATOMIC_H, and the build dies on the first source that pulls the
 # header in. The C1083 "cannot open libavutil/avassert.h" errors alongside it
 # are downstream noise from the aborted compile, not a missing include path —
@@ -483,7 +483,7 @@ make install
 
 # The dshow indev is THERE, checked rather than assumed.
 #
-# `--enable-indev=dshow` is a request. configure drops an indev whose
+# --enable-indev=dshow is a request. configure drops an indev whose
 # dependencies it could not find and says so only in config.log, so a build
 # that reported success could still ship a libavdevice with no way to open a
 # microphone — and nothing would notice until a capture cartridge failed on a
@@ -497,28 +497,35 @@ if ! grep -q 'CONFIG_DSHOW_INDEV=yes' '$MsysBuildDir/ffbuild/config.mak'; then
     echo "workload." >&2
     exit 1
 fi
-# The member names are read out of the archive with grep, not with `ar`.
+# The member names are read out of the archive with grep, not with ar.
 #
-# MSYS2 has no binutils: `ar`, `nm` and `strings` are all absent, so the check
+# MSYS2 has no binutils: ar, nm and strings are all absent, so the check
 # died on "ar: command not found" and reported the capture backend as missing
-# when it was there. An `ar` archive stores each member's NAME in plain text in
+# when it was there. An ar archive stores each member NAME in plain text in
 # its header, and this archive was made by lib.exe from objects called
-# `dshow_*.o` — so the name is in the file either way, and grep finds it
+# dshow_*.o, so the name is in the file either way and grep finds it
 # without a tool this machine does not have.
+#
+# NOTE: no backticks anywhere in this here-string, comments included. This is
+# an INTERPOLATING here-string, so PowerShell reads it before bash ever does,
+# and the backtick is PowerShell escape character. The word nm written between
+# backticks reached bash with its n eaten, bash ran what was left, and the
+# build died on "line 131: m: command not found" pointing at a comment. Prose
+# in this block names tools without quoting them.
 if ! grep -qa 'dshow' '$MsysDistDir/lib/libavdevice.a'; then
     echo "ERROR: built libavdevice.a contains no dshow members — capture was" >&2
     echo "dropped after configure agreed to it." >&2
     exit 1
 fi
 
-# ffmpeg names its static libraries `libavcodec.a` on every toolchain, MSVC
+# ffmpeg names its static libraries libavcodec.a on every toolchain, MSVC
 # included — the archives ARE MSVC-format, made by lib.exe, but the name is
-# ffmpeg's own convention. `link.exe` looks for `avcodec.lib`, and so does
-# rustc's `cargo:rustc-link-lib=static=avcodec`, so the names are made to say
+# ffmpeg's own convention. link.exe looks for avcodec.lib, and so does
+# rustc's cargo:rustc-link-lib=static=avcodec, so the names are made to say
 # what the files are.
 #
 # Renamed rather than copied: two files holding one archive is two things to
-# keep in step, and the `.a` name means "GNU archive" to everything that reads
+# keep in step, and the .a name means "GNU archive" to everything that reads
 # it.
 echo '==> Naming the archives as MSVC libraries'
 cd '$MsysDistDir/lib'
