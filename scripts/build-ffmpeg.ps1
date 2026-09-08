@@ -62,7 +62,36 @@ function Invoke-Msys2Bash([string]$Script) {
     # Write the script to a temp file - avoids quoting hazards with -c.
     $tmp = [System.IO.Path]::GetTempFileName() + '.sh'
     try {
-        [System.IO.File]::WriteAllText($tmp, $Script)
+        # The MSVC directories, prepended INSIDE the script.
+        #
+        # Measured on the guest, both sides of this call in one run:
+        #
+        #     parent PowerShell : PATH = 2444 chars, 10 MSVC entries
+        #     MSYS2 shell       : PATH = 29 entries,  0 MSVC
+        #
+        # 29 is the parent's PRE-vcvars entry count, so the shell inherits a
+        # snapshot of PATH taken before vcvars ran. The same code in isolation
+        # -- same Set-Item, same --login, same MSYS2_PATH_TYPE=inherit -- gives
+        # the shell 36 entries and all 10 MSVC ones, so nothing about the
+        # invocation is wrong; under cargo the grandchild simply receives a
+        # stale environment block, and which layer stales it is not something
+        # this script can see or fix.
+        #
+        # So it stops depending on inheritance for the one thing that matters.
+        # nasm and the POSIX tools arrive fine and are left to it; the compiler
+        # is stated. Converted to /c/... form here because that is what a shell
+        # PATH holds, and prepended so it wins over anything MSYS2's profile
+        # puts up.
+        $prelude = ''
+        if ($env:PATH) {
+            $msvc = @(($env:PATH -split ';') |
+                Where-Object { $_ -match 'Microsoft Visual Studio' } |
+                ForEach-Object { ConvertTo-MsysPath $_ })
+            if ($msvc.Count -gt 0) {
+                $prelude = "export PATH='" + ($msvc -join ':') + "':`"`$PATH`"`n"
+            }
+        }
+        [System.IO.File]::WriteAllText($tmp, $prelude + $Script)
         $tmpMsys = ConvertTo-MsysPath $tmp
         # MSYS, not MINGW64. What builds ffmpeg here is MSVC: MSYS2 supplies
         # the shell, make and the POSIX tools `configure` needs, and nothing
