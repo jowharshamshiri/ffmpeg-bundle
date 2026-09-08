@@ -191,8 +191,25 @@ MSVC-hosted. Install the Build Tools with the VC workload:
             throw "vcvars64.bat ran but set no $needed; cl.exe cannot find its headers"
         }
     }
-    if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
+    $found = Get-Command cl.exe -ErrorAction SilentlyContinue
+    if (-not $found) {
         throw 'vcvars64.bat ran but cl.exe is still not on PATH'
+    }
+    # The directory holding it, pinned to the FRONT of PATH.
+    #
+    # Not because it is missing -- it is there, and a probe on the guest
+    # confirmed `Get-Command` does not resolve cl.exe without it. It is
+    # pinned because this guard passed and the MSYS2 shell one line later
+    # reported `MISSING: cl.exe`, while resolving `nasm` through a Windows
+    # path: the shell inherited the Windows PATH and did not get the
+    # compiler out of it.
+    #
+    # Something between this process and that shell drops the entry, and
+    # putting it first is the one position that survives a truncation from
+    # the end. A no-op when nothing is wrong.
+    $clDir = Split-Path -Parent $found.Source
+    if (($env:PATH -split ';') -notcontains $clDir) {
+        $env:PATH = "$clDir;$env:PATH"
     }
 }
 
@@ -293,6 +310,19 @@ Write-Host "    MSYS2      = $Msys2Root" -ForegroundColor Green
 # ---------------------------------------------------------------------------
 Import-MsvcEnvironment
 
+# What the shell is about to inherit, said before it is asked.
+#
+# `MISSING: cl.exe` beside `ok: nasm (/c/ProgramData/...)` is a shell that DID
+# inherit the Windows PATH and did not get the compiler -- and every way of
+# reproducing that by hand on the same guest found cl.exe. So the environment
+# this process is holding at this exact moment is the thing to look at, and it
+# is the one thing the log never showed.
+$msvcOnPath = @(($env:PATH -split ';') | Where-Object { $_ -match 'Microsoft Visual Studio' })
+Write-Host "    PATH       = $($env:PATH.Length) chars, $($msvcOnPath.Count) MSVC entr$(if ($msvcOnPath.Count -eq 1) { 'y' } else { 'ies' })" -ForegroundColor Green
+if ($msvcOnPath.Count -gt 0) {
+    Write-Host "    cl.exe dir = $($msvcOnPath | Where-Object { $_ -match 'HostX64' } | Select-Object -First 1)" -ForegroundColor Green
+}
+
 Write-Host "==> Checking build tools" -ForegroundColor Cyan
 # `cl.exe` and `nasm` come from the WINDOWS side — the compiler from vcvars,
 # the assembler from wherever the machine declares it — and reach the shell
@@ -301,6 +331,18 @@ Write-Host "==> Checking build tools" -ForegroundColor Cyan
 # the environment whose answer matters.
 Invoke-Msys2Bash @'
 set -euo pipefail
+# What the shell ACTUALLY received, beside what the parent said it sent.
+#
+# A missing cl.exe next to an ok nasm resolved through /c/ProgramData says the
+# Windows PATH arrived and the compiler's directory was not in it. The parent
+# prints its own count just above; this prints the other end of the same wire,
+# so one log says where the entry is lost instead of two runs guessing.
+#
+# No backticks anywhere in here: this is a non-interpolating here-string today
+# and one edit away from being an interpolating one, where a backtick is
+# PowerShell's escape character and eats the next character on its way to bash.
+echo "  shell PATH: $(echo "$PATH" | tr ':' '\n' | wc -l | tr -d ' ') entries, \
+$(echo "$PATH" | tr ':' '\n' | grep -ci 'Microsoft Visual Studio' || true) MSVC"
 missing=0
 for tool in cl.exe make nasm diff; do
     if command -v "$tool" >/dev/null 2>&1; then

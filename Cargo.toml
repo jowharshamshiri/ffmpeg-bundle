@@ -13,4 +13,4 @@ edition = "2021"
 license = "LGPL-2.1-or-later"
 name = "ffmpeg-bundle"
 publish = false
-version = "1.45.0"
+version = "1.46.0"
