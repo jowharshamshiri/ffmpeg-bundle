@@ -102,9 +102,29 @@ function Invoke-Msys2Bash([string]$Script) {
         # Anything carrying a path -- `-I`, `-L`, a source file -- is left for
         # MSYS2 to convert, which is the whole reason it is in the loop.
         $env:MSYS2_ARG_CONV_EXCL = '/Fo;/Fd;/Fe;/Fp;/D;/M;/nologo;/W;/O;/Z;/G;/E;/link;-D;-W;-O;-std;-m;-f;-g;-pthread'
-        & $Bash --login -c "bash '$tmpMsys'"
+        # CAPTURED, and the tail put into the throw.
+        #
+        # This inherited the parent's streams and threw an exit code. cargo
+        # captures a build script's output and shows none of it, so make's and
+        # cl.exe's own words -- the compiler error that actually stopped the
+        # build -- reached nobody, and the failure that arrived was
+        # "MSYS2 script failed (exit 1)" pointing at this line.
+        #
+        # That is what made a Windows ffmpeg failure undiagnosable from
+        # anywhere but inside the guest: build.rs faithfully reported what it
+        # was given, and what it was given said nothing.
+        #
+        # `2>&1` because make writes progress to stdout and the compiler writes
+        # errors to stderr, and the interleaving is what makes a build log
+        # readable -- which file was being compiled when the error came.
+        $said = & $Bash --login -c "bash '$tmpMsys'" 2>&1 | ForEach-Object { "$_" }
+        $said | ForEach-Object { Write-Host $_ }
         if ($LASTEXITCODE -ne 0) {
-            throw "MSYS2 script failed (exit $LASTEXITCODE)"
+            # The END of it. An ffmpeg build prints thousands of lines and the
+            # interesting part of a log about something that stopped is the
+            # last of it; the whole thing is above, for anyone who has the log.
+            $tail = ($said | Select-Object -Last 40) -join "`n"
+            throw "MSYS2 script failed (exit $LASTEXITCODE):`n$tail"
         }
     } finally {
         Remove-Item -Path $tmp -Force -ErrorAction SilentlyContinue
