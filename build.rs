@@ -382,12 +382,25 @@ fn run_recipe(manifest_dir: &Path, into: &Path) -> Result<(), String> {
         "cargo:warning=ffmpeg-bundle: building ffmpeg from source into {into:?} \
          (once per version and platform; several minutes)"
     );
-    let status = std::process::Command::new(program)
+    // CAPTURED, not inherited. Cargo captures a build script's stdout and
+    // shows none of it unless the script asks with `cargo:warning=`, so a
+    // recipe whose output was merely inherited wrote its `ok:` lines and the
+    // compiler error that actually stopped it into a stream nobody ever sees.
+    //
+    // The failure below then said "the recipe's own output above says where it
+    // stopped" — pointing at nothing. On Windows that cost a full diagnosis:
+    // the panic named a PowerShell `throw` and a build.rs line, the MSVC error
+    // underneath it was gone, and the only way to read it was to go into the
+    // guest and open the log by hand.
+    //
+    // So it is captured and carried INTO the error, which is the one string
+    // cargo does print.
+    let produced = std::process::Command::new(program)
         .args(&args)
         .current_dir(manifest_dir)
         .env("FFMPEG_BUNDLE_BUILD_DIR", into)
-        .status()
-        // The PROGRAM, not the script. `Command::status` reports ENOENT about
+        .output()
+        // The PROGRAM, not the script. `Command::output` reports ENOENT about
         // the thing it tried to execute, and naming the script instead turned
         // "there is no bash on this machine" into "this file is missing" about
         // a file that is present — which is how a Windows build spent its
@@ -398,30 +411,34 @@ fn run_recipe(manifest_dir: &Path, into: &Path) -> Result<(), String> {
                  {program} is what runs the recipe on this platform, and it was not found."
             )
         })?;
-    if !status.success() {
+    if !produced.status.success() {
+        let status = produced.status;
         return Err(format!(
             "ffmpeg-bundle: {script:?} failed ({status}).\n\
-             {}",
+             {}\n\
+             \n--- the recipe's last output ---\n{}\n--- end ---",
             // What it NEEDS, not what is wrong: the recipe checks each tool and
             // prints `ok: <tool>` for the ones it found, so by the time this
             // runs the tools are usually all present and the failure is further
             // in. Stating a missing toolchain as the reason sent a whole
-            // diagnosis after tools that were never absent; the compiler error
-            // above this line is the thing to read.
+            // diagnosis after tools that were never absent; the output below is
+            // the thing to read.
             if cfg!(target_os = "windows") {
-                "The recipe's own output above says where it stopped. It requires the \
-                 Visual Studio Build Tools with the VC workload (cl.exe), nasm on PATH, \
-                 and MSYS2 with make, diffutils and pkgconf — it reports each as `ok:` \
-                 when it finds it, so a failure after those lines is a build error, not \
-                 a missing tool."
+                "It requires the Visual Studio Build Tools with the VC workload \
+                 (cl.exe), nasm on PATH, and MSYS2 with make, diffutils and \
+                 pkgconf — it reports each as `ok:` when it finds it, so a \
+                 failure after those lines is a build error, not a missing tool."
             } else {
-                "The recipe's own output above says where it stopped. It requires make, \
-                 clang, pkg-config, curl, tar and one of nasm/yasm on PATH."
-            }
+                "It requires make, clang, pkg-config, curl, tar and one of \
+                 nasm/yasm on PATH."
+            },
+            recipe_tail(&produced.stdout, &produced.stderr),
         ));
     }
     Ok(())
 }
+
+include!("src/recipe_report.rs");
 
 /// A directory created atomically, held for the duration of a build.
 ///
@@ -549,3 +566,4 @@ fn verify_archive_platform(path: &std::path::Path) {
         );
     }
 }
+

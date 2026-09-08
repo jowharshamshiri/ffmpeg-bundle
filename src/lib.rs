@@ -658,3 +658,95 @@ mod tests {
         assert_eq!(std::mem::align_of::<AVRational>(), std::mem::align_of::<c_int>());
     }
 }
+
+/// What a failed build reports, tested against the same code the build script
+/// runs.
+///
+/// `cargo test` never compiles a build script, so the one part of this crate
+/// that decides what a FAILURE looks like was the only part with no test — and
+/// it was wrong: it told every reader to look at output cargo had already
+/// discarded. The function lives in `src/recipe_report.rs` and is included by
+/// both `build.rs` and this module, so what is tested here is literally what
+/// runs there rather than a copy that can drift.
+#[cfg(test)]
+mod recipe_report_tests {
+    include!("recipe_report.rs");
+
+    /// TEST9713: a failed recipe's message carries what the recipe actually
+    /// said, from BOTH streams.
+    ///
+    /// Cargo captures a build script's stdout and prints none of it, so a
+    /// recipe whose output was merely inherited wrote its progress into a
+    /// stream nobody sees. The failure then read "the recipe's own output
+    /// above says where it stopped" while there was nothing above it — and on
+    /// Windows the MSVC error that actually stopped the build could only be
+    /// recovered by opening a log inside the guest.
+    #[test]
+    fn test9713_a_failure_quotes_both_streams() {
+        let quoted = recipe_tail(
+            b"ok: cl.exe\nok: nasm\nok: make\n",
+            b"aacdec.c(1): fatal error C1083: cannot open 'libavutil/avassert.h'\n",
+        );
+
+        // The recipe's own progress: which tools it found before it stopped,
+        // which is what says a failure is a build error and not a missing tool.
+        assert!(quoted.contains("ok: cl.exe"), "{quoted}");
+        assert!(quoted.contains("ok: nasm"), "{quoted}");
+        // And the error that actually stopped it.
+        assert!(quoted.contains("C1083"), "{quoted}");
+        // Labelled, because "cannot open avassert.h" means one thing from the
+        // compiler and another from the recipe's own checks.
+        assert!(
+            quoted.contains("[stdout]") && quoted.contains("[stderr]"),
+            "{quoted}"
+        );
+    }
+
+    /// TEST9714: a recipe that said nothing says so, rather than pointing at
+    /// output that does not exist.
+    ///
+    /// "Look at the output above" is advice a reader cannot follow when there
+    /// is no output above, and following it costs the time it takes to find
+    /// that out. A recipe that failed silently is itself the finding.
+    #[test]
+    fn test9714_silence_is_reported_as_silence() {
+        let quoted = recipe_tail(b"", b"   \n");
+
+        assert!(quoted.contains("wrote nothing"), "{quoted}");
+        assert!(
+            !quoted.contains("[stdout]"),
+            "an empty stream is not quoted: {quoted}"
+        );
+    }
+
+    /// TEST9715: a long build is truncated to its end, and says how much it
+    /// dropped.
+    ///
+    /// An ffmpeg build prints thousands of lines; the interesting part of a log
+    /// about something that stopped is the end. A reader who cannot see that
+    /// the beginning was cut goes looking for a start that is not missing.
+    #[test]
+    fn test9715_a_long_log_is_tailed_and_says_so() {
+        let many: Vec<String> = (0..500).map(|n| format!("line {n}")).collect();
+        let quoted = recipe_tail(many.join("\n").as_bytes(), b"");
+
+        assert!(quoted.contains("line 499"), "the end is kept: {quoted}");
+        assert!(!quoted.contains("line 0\n"), "the beginning is dropped");
+        assert!(
+            quoted.contains("earlier lines not shown"),
+            "and it says so: {quoted}"
+        );
+    }
+
+    /// TEST9716: output that is not valid UTF-8 is still reported.
+    ///
+    /// A Windows toolchain writes in the console's code page, not UTF-8, and a
+    /// message that refused to render it would lose the whole failure to an
+    /// encoding detail — which is the one moment it is needed.
+    #[test]
+    fn test9716_invalid_utf8_does_not_lose_the_failure() {
+        let quoted = recipe_tail(b"", b"error: \xff\xfe bad byte here\n");
+
+        assert!(quoted.contains("bad byte here"), "{quoted}");
+    }
+}
