@@ -424,8 +424,17 @@ if (-not (Test-Path $SourceDir)) {
     if (Test-Path $Extracting) { Remove-Item -Recurse -Force $Extracting }
     New-Item -ItemType Directory -Force -Path $Extracting | Out-Null
     # Windows 10 1803+ ships tar.exe; fall back to MSYS2 tar otherwise.
-    if (Get-Command tar -CommandType Application -ErrorAction SilentlyContinue) {
-        & tar -xzf $Tarball -C $Extracting
+    #
+    # Windows' OWN tar, named by path. This asked for `tar` on PATH, and when
+    # the build is started from an MSYS2 shell -- as the capdag CLI stubs are
+    # -- the first `tar` there is GNU tar from /usr/bin. GNU tar reads
+    # `C:\...` as HOST:PATH, a remote archive on a machine called `C`, and
+    # died with "tar (child): Cannot connect to C: resolve failed" on a
+    # tarball that was sitting on the local disk. bsdtar, which Windows ships,
+    # takes a drive letter as a drive letter.
+    $SystemTar = Join-Path $env:SystemRoot 'System32\tar.exe'
+    if (Test-Path -LiteralPath $SystemTar) {
+        & $SystemTar -xzf $Tarball -C $Extracting
         if ($LASTEXITCODE -ne 0) { throw "tar extraction failed" }
     } else {
         $msysTar        = ConvertTo-MsysPath $Tarball

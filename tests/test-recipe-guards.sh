@@ -366,5 +366,25 @@ eats the character after it before bash sees the line"
 case_result $? "the generated bash carries no PowerShell escapes"
 
 echo
+echo "TEST12104 — the MSVC recipe extracts with Windows' own tar, named by path"
+(
+    ps1="$ROOT/scripts/build-ffmpeg.ps1"
+    [ -f "$ps1" ] || fail "the MSVC recipe is missing"
+
+    # Asking for `tar` on PATH gets GNU tar whenever the build is started from
+    # an MSYS2 shell, and GNU tar reads `C:\...` as a remote HOST:PATH:
+    #   tar (child): Cannot connect to C: resolve failed
+    # on a tarball that was on the local disk (capdag CLI stubs, pve Windows
+    # guest). Windows' bsdtar takes a drive letter as a drive letter.
+    grep -qF "Join-Path \$env:SystemRoot 'System32\\tar.exe'" "$ps1" \
+        || fail "the recipe does not name Windows' own tar.exe by its path"
+    if grep -qE "^[[:space:]]*& tar " "$ps1"; then
+        fail "the recipe still runs whichever 'tar' is first on PATH"
+    fi
+    exit 0
+)
+case_result $? "the MSVC recipe extracts with Windows' own tar"
+
+echo
 echo "${PASSED} passed, ${FAILED} failed"
 [ "$FAILED" -eq 0 ]
