@@ -66,7 +66,7 @@ you are distributing commercially it is worth an hour of a lawyer's time.
 
 | Path | Contents | Copyright |
 | --- | --- | --- |
-| `sources/ffmpeg-*` | Unmodified FFmpeg release tarball and extracted tree | The FFmpeg authors — LGPL-2.1-or-later |
+| `sources/ffmpeg-*` | Unmodified FFmpeg source at the pinned tag, and its extracted tree | The FFmpeg authors — LGPL-2.1-or-later |
 | `dist/lib`, `dist/include` | Static archives and headers built from that source | The FFmpeg authors — LGPL-2.1-or-later |
 | `scripts/`, `build.rs`, `src/` | Build recipe and the Rust FFI shim | This repository's author, under the same licence |
 
@@ -95,8 +95,11 @@ flags, or to verify what the committed archives contain:
 scripts/build-ffmpeg.sh
 ```
 
-It fetches the release named in `ffmpeg-version.txt`, configures it with the
-restricted flag set, builds, and writes the archives into `dist/`.
+It fetches FFmpeg's GitHub archive of the tag named in `ffmpeg-version.txt`,
+refuses it unless its SHA-256 is the one in `ffmpeg-source.sha256`, adds the
+`VERSION` file the release tarball carries, configures it with the restricted
+flag set, builds, and writes the archives into `dist/`. Moving to another FFmpeg
+release means changing both files together.
 
 ## Changing what is enabled
 

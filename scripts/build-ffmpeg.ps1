@@ -263,6 +263,15 @@ if ([string]::IsNullOrEmpty($Version)) {
 }
 $VersionNoPrefix = $Version -replace '^n', ''
 
+$ShaFile = Join-Path $Root 'ffmpeg-source.sha256'
+if (-not (Test-Path $ShaFile)) {
+    throw "ffmpeg-source.sha256 not found at $ShaFile"
+}
+$ExpectedSha256 = (Get-Content $ShaFile -Raw).Trim()
+if ($ExpectedSha256 -cnotmatch '^[0-9a-f]{64}$') {
+    throw "ffmpeg-source.sha256 does not hold a SHA-256 digest; refusing to build"
+}
+
 # Everything this script produces goes under FFMPEG_BUNDLE_BUILD_DIR, and it
 # has NO default — the same contract build-ffmpeg.sh carries, for the same
 # reason: the one wrong answer is the source tree, and a default is how output
@@ -405,14 +414,21 @@ if (-not (Test-Path $SourceDir)) {
 
     $Tarball = Join-Path $SourcesDir "ffmpeg-$Version.tar.gz"
     if (-not (Test-Path $Tarball)) {
-        # www., not the apex. The apex name has answered with a reset
-        # connection for long stretches, and a build that dies there died for
-        # a reason with nothing to do with this recipe.
-        $Url = "https://www.ffmpeg.org/releases/ffmpeg-$VersionNoPrefix.tar.gz"
+        # GitHub's archive of the pinned tag, not ffmpeg.org's release tarball,
+        # as build-ffmpeg.sh fetches it: ffmpeg.org's one server has answered
+        # with resets and timeouts for long stretches, and the tag's tree is
+        # the release tarball's less the VERSION file written below.
+        $Url = "https://github.com/FFmpeg/FFmpeg/archive/refs/tags/$Version.tar.gz"
         Write-Host "==> Fetching $Url" -ForegroundColor Cyan
         $Partial = "$Tarball.partial"
         if (Test-Path $Partial) { Remove-Item -Force $Partial }
         Invoke-WebRequest -Uri $Url -OutFile $Partial -UseBasicParsing
+        # Verified before it is published at the name that means "fetched".
+        $ActualSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $Partial).Hash.ToLowerInvariant()
+        if ($ActualSha256 -cne $ExpectedSha256) {
+            Remove-Item -Force $Partial
+            throw "$Url is not the pinned source: its SHA-256 is $ActualSha256, and ffmpeg-source.sha256 pins $ExpectedSha256"
+        }
         Move-Item -Path $Partial -Destination $Tarball
     }
 
@@ -442,11 +458,14 @@ if (-not (Test-Path $SourceDir)) {
         Invoke-Msys2Bash "tar -xzf '$msysTar' -C '$msysExtracting'"
     }
 
-    # Rename from ffmpeg-X.Y to ffmpeg-nX.Y to match the pinned tag form.
-    $ExtractedDir = Join-Path $Extracting "ffmpeg-$VersionNoPrefix"
+    $ExtractedDir = Join-Path $Extracting "FFmpeg-$Version"
     if (-not (Test-Path $ExtractedDir)) {
-        throw "the tarball did not contain ffmpeg-$VersionNoPrefix"
+        throw "the tarball did not contain FFmpeg-$Version"
     }
+    # The release's VERSION file, which the tag's tree lacks. ffmpeg names
+    # itself from it, and without it asks git in the source directory.
+    # ASCII with a bare LF, as the release writes it.
+    [System.IO.File]::WriteAllText((Join-Path $ExtractedDir 'VERSION'), "$VersionNoPrefix`n", [System.Text.Encoding]::ASCII)
     Move-Item -Path $ExtractedDir -Destination $SourceDir
     Remove-Item -Recurse -Force $Extracting
 }

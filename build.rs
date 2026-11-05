@@ -241,6 +241,7 @@ fn main() {
 fn ensure_dist(manifest_dir: &Path) -> PathBuf {
     println!("cargo:rerun-if-env-changed=FFMPEG_BUNDLE_BUILD_DIR");
     println!("cargo:rerun-if-changed=ffmpeg-version.txt");
+    println!("cargo:rerun-if-changed=ffmpeg-source.sha256");
     // BOTH recipes, not this platform's. `rerun-if-changed` is about when to
     // run the build script at all, and running it when the other platform's
     // recipe moved costs one cheap re-execution that finds its dist already
@@ -429,8 +430,8 @@ fn run_recipe(manifest_dir: &Path, into: &Path) -> Result<(), String> {
                  pkgconf — it reports each as `ok:` when it finds it, so a \
                  failure after those lines is a build error, not a missing tool."
             } else {
-                "It requires make, clang, pkg-config, curl, tar and one of \
-                 nasm/yasm on PATH."
+                "It requires make, clang, pkg-config, curl, tar, one of \
+                 sha256sum/shasum and one of nasm/yasm on PATH."
             },
             recipe_tail(&produced.stdout, &produced.stderr),
         ));
@@ -465,8 +466,8 @@ fn wait_for(dist: &Path) -> bool {
     false
 }
 
-/// What the output depends on: the pinned version, the recipe that builds it,
-/// and the platform it is built for.
+/// What the output depends on: the pinned version and source, the recipe that
+/// builds it, and the platform it is built for.
 ///
 /// The configure flags live inside the recipe, so hashing the recipe covers
 /// them — there is no second place a flag can change without this noticing.
@@ -479,7 +480,12 @@ fn build_identity(manifest_dir: &Path) -> String {
     // an identity that had not moved, so the stale one would be reused for
     // ever and the change would appear to have done nothing.
     let (_, _, script) = recipe(manifest_dir);
-    for path in [manifest_dir.join("ffmpeg-version.txt"), script] {
+    for path in [
+        manifest_dir.join("ffmpeg-version.txt"),
+        // The source the version is fetched as: a new pin is new input.
+        manifest_dir.join("ffmpeg-source.sha256"),
+        script,
+    ] {
         let bytes = std::fs::read(&path)
             .unwrap_or_else(|e| panic!("ffmpeg-bundle: cannot read {path:?}: {e}"));
         bytes.hash(&mut hasher);

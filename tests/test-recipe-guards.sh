@@ -2,14 +2,14 @@
 #
 # The recipe's decisions about what has already been done.
 #
-# A real run of scripts/build-ffmpeg.sh downloads ffmpeg's release tarball and
-# compiles it, which takes minutes; nothing here does either. What is under
+# A real run of scripts/build-ffmpeg.sh downloads ffmpeg's source and compiles
+# it, which takes minutes; nothing here does either. What is under
 # test is the set of guards that decide whether to fetch, extract and
 # configure — and being interrupted part way through any of those is the
 # normal case, not the exotic one, because each takes long enough to be killed
 # by a closed laptop or a dropped network.
 #
-# TEST9705-9708.
+# TEST9705-9708, TEST21802-21804.
 
 set -uo pipefail
 
@@ -35,14 +35,53 @@ case_result() {
     fi
 }
 
-# Stubs for everything the recipe shells out to. `curl` writes a real gzipped
-# tar of a source tree that is empty apart from a `configure` — enough for the
-# fetch and extract guards to be exercised for real rather than mocked.
+# The source the stub curl serves: a real gzipped tar laid out as GitHub lays
+# out a tag's archive, with a source tree that is empty apart from a
+# `configure`. Made ONCE, because the recipe checks a download against a
+# pinned digest and a tarball made per fetch would carry a new timestamp, and
+# so a new digest, every time.
+FIXTURES="$(mktemp -d "${TMPDIR:-/tmp}/ffmpeg-fixtures.XXXXXX")"
+trap 'rm -rf "$FIXTURES"' EXIT
+make_source() {
+    local into="$1" marker="$2" tree
+    tree="$(mktemp -d)"
+    mkdir -p "$tree/FFmpeg-$VERSION"
+    printf '#!/bin/bash\n# %s\nexit 0\n' "$marker" > "$tree/FFmpeg-$VERSION/configure"
+    chmod +x "$tree/FFmpeg-$VERSION/configure"
+    tar -czf "$into" -C "$tree" "FFmpeg-$VERSION"
+    rm -rf "$tree"
+}
+make_source "$FIXTURES/pinned.tar.gz" pinned
+# Another archive of the same layout: what a download that is not the pinned
+# source looks like.
+make_source "$FIXTURES/other.tar.gz" other
+digest() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    else
+        shasum -a 256 "$1" | cut -d' ' -f1
+    fi
+}
+PINNED_SHA256="$(digest "$FIXTURES/pinned.tar.gz")"
+
+# A copy of the recipe, pinned to the fixture's digest. The recipe reads its
+# pins from the directory above its own, so the copy is the recipe itself,
+# checked against a source the stub can serve.
+make_root() {
+    local root="$1"
+    mkdir -p "$root/scripts"
+    cp "$ROOT/scripts/build-ffmpeg.sh" "$root/scripts/"
+    cp "$ROOT/ffmpeg-version.txt" "$root/"
+    printf '%s\n' "$PINNED_SHA256" > "$root/ffmpeg-source.sha256"
+}
+
+# Stubs for everything the recipe shells out to.
 make_stubs() {
     local bin="$1" log="$2"
     mkdir -p "$bin"
 
-    # A curl that can be told to die part way, leaving whatever it had written.
+    # A curl that serves the fixture, or can be told to die part way, leaving
+    # whatever it had written, or to serve a source that is not the pinned one.
     cat > "$bin/curl" <<EOF
 #!/bin/bash
 echo "curl \$*" >> "$log"
@@ -55,12 +94,11 @@ if [ "\${STUB_CURL_TRUNCATE:-0}" = "1" ]; then
     printf 'this is not a gzip stream' > "\$out"
     exit 1
 fi
-tmp="\$(mktemp -d)"
-mkdir -p "\$tmp/ffmpeg-$BARE"
-printf '#!/bin/bash\nexit 0\n' > "\$tmp/ffmpeg-$BARE/configure"
-chmod +x "\$tmp/ffmpeg-$BARE/configure"
-tar -czf "\$out" -C "\$tmp" "ffmpeg-$BARE"
-rm -rf "\$tmp"
+if [ "\${STUB_CURL_OTHER:-0}" = "1" ]; then
+    cp "$FIXTURES/other.tar.gz" "\$out"
+    exit 0
+fi
+cp "$FIXTURES/pinned.tar.gz" "\$out"
 exit 0
 EOF
 
@@ -85,21 +123,19 @@ scratch() {
 # nothing about the guards.
 run_recipe() {
     local build_dir="$1" log="$2" out="$3"
-    local bin="${build_dir}/.stubs"
+    local bin="${build_dir}/.stubs" root="${build_dir}/.recipe"
     make_stubs "$bin" "$log"
+    make_root "$root"
     PATH="$bin:$PATH" FFMPEG_BUNDLE_BUILD_DIR="$build_dir" \
-        bash "$ROOT/scripts/build-ffmpeg.sh" > "$out" 2>&1
+        bash "$root/scripts/build-ffmpeg.sh" > "$out" 2>&1
 }
 
 echo "TEST9705 — a download killed part way is not cached as the tarball"
 (
     work="$(scratch)"; trap 'rm -rf "$work"' EXIT
     log="$work/log"; : > "$log"
-    bin="$work/build/.stubs"
-    make_stubs "$bin" "$log"
     # The fetch dies with bytes already written.
-    PATH="$bin:$PATH" FFMPEG_BUNDLE_BUILD_DIR="$work/build" STUB_CURL_TRUNCATE=1 \
-        bash "$ROOT/scripts/build-ffmpeg.sh" > "$work/out" 2>&1 \
+    STUB_CURL_TRUNCATE=1 run_recipe "$work/build" "$log" "$work/out" \
         && fail "a failed download reported success"
 
     tarball="$work/build/sources/ffmpeg-$VERSION.tar.gz"
@@ -150,19 +186,62 @@ echo "TEST9707 — configure is stamped by us, not inferred from config.mak"
 )
 case_result $? "a config.mak with no stamp means configure runs again"
 
-echo "TEST9708 — the release tarball is fetched from the www host"
+echo "TEST9708 — the source is GitHub's archive of the pinned tag"
 (
     work="$(scratch)"; trap 'rm -rf "$work"' EXIT
     log="$work/log"; : > "$log"
     run_recipe "$work/build" "$log" "$work/out"
-    # The apex name has answered with a reset connection for long stretches.
-    # A build that dies there died for a reason with nothing to do with this
-    # recipe, and the host is worth pinning so it cannot drift back.
-    grep -q "https://www.ffmpeg.org/releases/ffmpeg-$BARE.tar.gz" "$log" \
-        || fail "the fetch does not name www.ffmpeg.org: $(grep '^curl ' "$log")"
+    # ffmpeg.org's one server has answered with resets and timeouts for long
+    # stretches, first at the apex name and then at www. A build that dies
+    # there died for a reason with nothing to do with this recipe, so the
+    # source comes from where the tag is mirrored, and cannot drift back.
+    grep -q "https://github.com/FFmpeg/FFmpeg/archive/refs/tags/$VERSION.tar.gz" "$log" \
+        || fail "the fetch does not name GitHub's archive of $VERSION: $(grep '^curl ' "$log")"
+    grep -q "ffmpeg.org" "$log" && fail "the fetch still reaches ffmpeg.org: $(grep '^curl ' "$log")"
     exit 0
 )
-case_result $? "the fetch names www.ffmpeg.org, not the apex"
+case_result $? "the fetch names GitHub's archive of the pinned tag, never ffmpeg.org"
+
+echo "TEST21802 — a download that is not the pinned source is refused"
+(
+    work="$(scratch)"; trap 'rm -rf "$work"' EXIT
+    log="$work/log"; : > "$log"
+    STUB_CURL_OTHER=1 run_recipe "$work/build" "$log" "$work/out" \
+        && fail "a source with another digest was built"
+    other="$(digest "$FIXTURES/other.tar.gz")"
+    grep -q "its SHA-256 is $other, and ffmpeg-source.sha256 pins $PINNED_SHA256" "$work/out" \
+        || fail "the refusal does not name both digests: $(tail -3 "$work/out")"
+    sources="$work/build/sources"
+    [ -e "$sources/ffmpeg-$VERSION.tar.gz" ] && fail "the refused download was published as the tarball"
+    [ -e "$sources/ffmpeg-$VERSION.tar.gz.partial" ] && fail "the refused download was left behind"
+    [ -e "$sources/ffmpeg-$VERSION" ] && fail "a source tree was extracted from the refused download"
+    grep -q "Configuring" "$work/out" && fail "configure ran on a source that was refused"
+
+    # And the next run fetches again, and builds from the pinned source.
+    : > "$log"
+    run_recipe "$work/build" "$log" "$work/out"
+    grep -q "^curl " "$log" || fail "the run after a refusal did not fetch again"
+    grep -q "# pinned" "$sources/ffmpeg-$VERSION/configure" \
+        || fail "the run after a refusal did not extract the pinned source"
+    exit 0
+)
+case_result $? "a source whose digest is not the pinned one is never published, extracted or built"
+
+echo "TEST21803 — the source tree names its release, as the release tarball does"
+(
+    work="$(scratch)"; trap 'rm -rf "$work"' EXIT
+    log="$work/log"; : > "$log"
+    run_recipe "$work/build" "$log" "$work/out"
+    tree="$work/build/sources/ffmpeg-$VERSION"
+    [ -x "$tree/configure" ] || fail "the source tree was not published at ffmpeg-$VERSION"
+    # The release tarball's VERSION is the bare version and a newline. Without
+    # it, ffmpeg's version.sh asks git, which in a consumer's checkout answers
+    # with the consumer's tag.
+    [ "$(od -An -c "$tree/VERSION" 2>/dev/null | tr -s ' ')" = "$(printf '%s\n' "$BARE" | od -An -c | tr -s ' ')" ] \
+        || fail "VERSION is not '$BARE' and a newline: $(od -An -c "$tree/VERSION" 2>&1)"
+    exit 0
+)
+case_result $? "the extracted tree carries VERSION, so ffmpeg names the pinned release"
 
 echo "TEST9709 — the MSVC recipe compiles as C11, so <stdatomic.h> is usable"
 (
@@ -384,6 +463,42 @@ echo "TEST12104 — the MSVC recipe extracts with Windows' own tar, named by pat
     exit 0
 )
 case_result $? "the MSVC recipe extracts with Windows' own tar"
+
+echo
+echo "TEST21804 — the MSVC recipe fetches the pinned source as the POSIX one does"
+(
+    ps1="$ROOT/scripts/build-ffmpeg.ps1"
+    [ -f "$ps1" ] || fail "the MSVC recipe is missing"
+
+    # Read off the recipe: it cannot run here, because it checks for MSVC and
+    # MSYS2 before it fetches anything.
+    grep -qE '^[[:space:]]+\$Url = "https://github\.com/FFmpeg/FFmpeg/archive/refs/tags/\$Version\.tar\.gz"' "$ps1" \
+        || fail "the MSVC recipe does not fetch GitHub's archive of the pinned tag"
+    grep -qE '^[^#]*ffmpeg\.org' "$ps1" && fail "the MSVC recipe still reaches ffmpeg.org"
+
+    # The pin is the same file the POSIX recipe reads, and the download is
+    # checked against it BEFORE it reaches the name that means "fetched".
+    grep -qF "Join-Path \$Root 'ffmpeg-source.sha256'" "$ps1" \
+        || fail "the MSVC recipe does not read its pin from ffmpeg-source.sha256"
+    check=$(grep -nE '^[[:space:]]+if \(\$ActualSha256 -cne \$ExpectedSha256\)' "$ps1" | head -1 | cut -d: -f1)
+    publish=$(grep -nF 'Move-Item -Path $Partial -Destination $Tarball' "$ps1" | head -1 | cut -d: -f1)
+    [ -n "$check" ] || fail "the MSVC recipe does not compare the download's digest with the pin"
+    [ -n "$publish" ] || fail "the MSVC recipe does not publish the tarball by rename"
+    [ "$check" -lt "$publish" ] || fail "the MSVC recipe publishes the tarball before checking its digest"
+    grep -qE 'Get-FileHash -Algorithm SHA256 -LiteralPath \$Partial' "$ps1" \
+        || fail "the digest compared is not the downloaded file's"
+
+    # And the tree is named by its release before it is published.
+    version=$(grep -nE "^[[:space:]]+\\[System\\.IO\\.File\\]::WriteAllText\(\(Join-Path \\\$ExtractedDir 'VERSION'\), \"\\\$VersionNoPrefix\`n\"" "$ps1" | head -1 | cut -d: -f1)
+    moved=$(grep -nF 'Move-Item -Path $ExtractedDir -Destination $SourceDir' "$ps1" | head -1 | cut -d: -f1)
+    [ -n "$version" ] || fail "the MSVC recipe does not write VERSION into the extracted tree"
+    [ -n "$moved" ] && [ "$version" -lt "$moved" ] \
+        || fail "the MSVC recipe publishes the source tree before writing VERSION"
+    grep -qF '$ExtractedDir = Join-Path $Extracting "FFmpeg-$Version"' "$ps1" \
+        || fail "the MSVC recipe does not look for the archive's FFmpeg-<tag> directory"
+    exit 0
+)
+case_result $? "the MSVC recipe fetches, checks and names the source as the POSIX one does"
 
 echo
 echo "${PASSED} passed, ${FAILED} failed"

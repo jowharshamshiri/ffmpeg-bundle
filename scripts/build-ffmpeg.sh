@@ -25,7 +25,8 @@
 #   - clang/cc (Xcode CLT)
 #   - make, pkg-config, nasm or yasm (for x86 SIMD; the configure
 #     auto-detects which)
-#   - curl (or git) for source fetch
+#   - curl and tar for source fetch, sha256sum or shasum to verify it
+#     against ffmpeg-source.sha256
 #
 # Output:
 # Required environment:
@@ -106,6 +107,21 @@ if ! command -v nasm >/dev/null 2>&1 && ! command -v yasm >/dev/null 2>&1; then
 fi
 require curl
 require tar
+# One digest, two names: Linux ships sha256sum, macOS ships shasum.
+if command -v sha256sum >/dev/null 2>&1; then
+    sha256() { sha256sum "$1" | cut -d' ' -f1; }
+elif command -v shasum >/dev/null 2>&1; then
+    sha256() { shasum -a 256 "$1" | cut -d' ' -f1; }
+else
+    echo "missing required tool: sha256sum or shasum" >&2
+    exit 1
+fi
+
+EXPECTED_SHA256="$(tr -d '[:space:]' < ffmpeg-source.sha256)"
+if [[ ! "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "ffmpeg-source.sha256 does not hold a SHA-256 digest; refusing to build" >&2
+    exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Fetch
@@ -121,12 +137,23 @@ if [[ ! -d "$SOURCE_DIR" ]]; then
     mkdir -p "$SOURCES_DIR"
     TARBALL="$SOURCES_DIR/ffmpeg-$VERSION.tar.gz"
     if [[ ! -f "$TARBALL" ]]; then
-        # www., not the apex. The apex name has answered with a reset
-        # connection for long stretches, and a build that dies there died for
-        # a reason with nothing to do with this recipe.
-        URL="https://www.ffmpeg.org/releases/ffmpeg-${VERSION#n}.tar.gz"
+        # GitHub's archive of the pinned tag, not ffmpeg.org's release tarball.
+        # ffmpeg.org's one server has answered with resets and timeouts for
+        # long stretches — first the apex name, then www. — and a build that
+        # dies there died for a reason with nothing to do with this recipe.
+        # The tag's tree is the release tarball's, file for file, less the
+        # VERSION file the release adds; that is written below.
+        URL="https://github.com/FFmpeg/FFmpeg/archive/refs/tags/$VERSION.tar.gz"
         echo "==> Fetching $URL"
         curl -fL --retry 3 --retry-connrefused -o "$TARBALL.partial" "$URL"
+        # Verified before it is published at the name that means "fetched",
+        # so a tarball at that name is always the pinned source.
+        ACTUAL_SHA256="$(sha256 "$TARBALL.partial")"
+        if [[ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]]; then
+            rm -f "$TARBALL.partial"
+            echo "$URL is not the pinned source: its SHA-256 is $ACTUAL_SHA256, and ffmpeg-source.sha256 pins $EXPECTED_SHA256" >&2
+            exit 1
+        fi
         mv "$TARBALL.partial" "$TARBALL"
     fi
     echo "==> Extracting $TARBALL"
@@ -137,9 +164,12 @@ if [[ ! -d "$SOURCE_DIR" ]]; then
     rm -rf "$EXTRACTING"
     mkdir -p "$EXTRACTING"
     tar -xzf "$TARBALL" -C "$EXTRACTING"
-    # Tarball top-level directory is "ffmpeg-X.Y" (no n prefix); rename
-    # to match our pinned tag form so everything else stays stable.
-    mv "$EXTRACTING/ffmpeg-${VERSION#n}" "$SOURCE_DIR"
+    # The release's VERSION file, which the tag's tree lacks. ffmpeg names
+    # itself from it, and without it asks `git describe` in the source
+    # directory — which, under a build directory inside a consumer's checkout,
+    # answers with the consumer's tag.
+    printf '%s\n' "${VERSION#n}" > "$EXTRACTING/FFmpeg-$VERSION/VERSION"
+    mv "$EXTRACTING/FFmpeg-$VERSION" "$SOURCE_DIR"
     rmdir "$EXTRACTING"
 fi
 
