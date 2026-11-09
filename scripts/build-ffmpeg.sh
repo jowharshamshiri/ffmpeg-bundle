@@ -288,6 +288,18 @@ CONFIG_FLAGS=(
     --ld=clang
 )
 
+# The C flags of the build's target, as cargo's C builds receive them (build.rs
+# reads CFLAGS_<target>, TARGET_CFLAGS or CFLAGS and passes them here): a
+# sysroot, when the binary is built against an older C library than this
+# machine's. ffmpeg is compiled AND linked with them, because clang is its
+# linker driver too and configure links test programs: compiled against this
+# machine's headers, the archives would ask for this machine's C library
+# whatever the binary they are linked into was built for.
+TARGET_CFLAGS="${FFMPEG_BUNDLE_TARGET_CFLAGS:-}"
+if [[ -n "$TARGET_CFLAGS" ]]; then
+    CONFIG_FLAGS+=(--extra-cflags="$TARGET_CFLAGS" --extra-ldflags="$TARGET_CFLAGS")
+fi
+
 # If the encoder/muxer/filter lists are non-empty in a future
 # refactor, append the corresponding --enable-* flags. We leave the
 # scaffolding in place but emit nothing today.
@@ -306,11 +318,20 @@ if [[ "$(uname)" == "Linux" ]]; then
     # Preflight: without the ALSA headers, ffmpeg's configure silently
     # drops the alsa indev and the dist ships WITHOUT microphone capture
     # — a broken live-feed backend nobody notices until runtime. Refuse.
-    if [[ ! -e /usr/include/alsa/asoundlib.h ]]; then
-        echo "ERROR: ALSA development headers not found (/usr/include/alsa/asoundlib.h)." >&2
+    #
+    # Asked of the compiler, with the target's flags, rather than of a path:
+    # with a sysroot the headers that count are the sysroot's, and
+    # /usr/include is this machine's.
+    # shellcheck disable=SC2086 # the target's flags are a list of words
+    if ! printf '#include <alsa/asoundlib.h>\n' | clang $TARGET_CFLAGS -E -x c - >/dev/null 2>&1; then
+        echo "ERROR: ALSA development headers not found: clang ${TARGET_CFLAGS:+$TARGET_CFLAGS }cannot include <alsa/asoundlib.h>." >&2
         echo "Microphone capture (avdevice alsa indev) cannot be built without them." >&2
-        echo "Install them first: sudo apt install libasound2-dev  (Debian/Ubuntu)" >&2
-        echo "                    sudo dnf install alsa-lib-devel   (Fedora)" >&2
+        if [[ -n "$TARGET_CFLAGS" ]]; then
+            echo "They are looked for where those flags point: the sysroot must hold libasound2-dev." >&2
+        else
+            echo "Install them first: sudo apt install libasound2-dev  (Debian/Ubuntu)" >&2
+            echo "                    sudo dnf install alsa-lib-devel   (Fedora)" >&2
+        fi
         exit 1
     fi
     # --disable-autodetect turns the ALSA external library OFF regardless

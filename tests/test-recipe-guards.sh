@@ -9,7 +9,7 @@
 # normal case, not the exotic one, because each takes long enough to be killed
 # by a closed laptop or a dropped network.
 #
-# TEST9705-9708, TEST21802-21804.
+# TEST9705-9708, TEST21802-21804, TEST21900-21901.
 
 set -uo pipefail
 
@@ -46,7 +46,10 @@ make_source() {
     local into="$1" marker="$2" tree
     tree="$(mktemp -d)"
     mkdir -p "$tree/FFmpeg-$VERSION"
-    printf '#!/bin/bash\n# %s\nexit 0\n' "$marker" > "$tree/FFmpeg-$VERSION/configure"
+    # It writes the arguments it was given, one per line, where
+    # STUB_CONFIGURE_LOG names, so a case can read what the recipe asked for.
+    printf '#!/bin/bash\n# %s\nif [ -n "${STUB_CONFIGURE_LOG:-}" ]; then printf "%%s\\n" "$@" > "$STUB_CONFIGURE_LOG"; fi\nexit 0\n' \
+        "$marker" > "$tree/FFmpeg-$VERSION/configure"
     chmod +x "$tree/FFmpeg-$VERSION/configure"
     tar -czf "$into" -C "$tree" "FFmpeg-$VERSION"
     rm -rf "$tree"
@@ -107,6 +110,23 @@ EOF
     cat > "$bin/make" <<EOF
 #!/bin/bash
 echo "make \$*" >> "$log"
+exit 0
+EOF
+
+    # nasm: the recipe only checks that an assembler is there, and configure
+    # and make are stubs, so whether this machine has one is no part of what
+    # is under test.
+    printf '#!/bin/bash\necho "nasm $*" >> "%s"\nexit 0\n' "$log" > "$bin/nasm"
+
+    # clang: the recipe asks it whether the ALSA headers can be included. It
+    # answers yes unless told the sysroot has none.
+    cat > "$bin/clang" <<EOF
+#!/bin/bash
+echo "clang \$*" >> "$log"
+if [ "\${STUB_CLANG_NO_ALSA:-0}" = "1" ]; then
+    echo "fatal error: 'alsa/asoundlib.h' file not found" >&2
+    exit 1
+fi
 exit 0
 EOF
 
@@ -242,6 +262,60 @@ echo "TEST21803 — the source tree names its release, as the release tarball do
     exit 0
 )
 case_result $? "the extracted tree carries VERSION, so ffmpeg names the pinned release"
+
+echo "TEST21900 — the target's C flags reach configure and the ALSA check"
+(
+    work="$(scratch)"; trap 'rm -rf "$work"' EXIT
+    log="$work/log"; : > "$log"
+    flags="--sysroot=$work/sysroot"
+    # What a build linking against an older C library hands every C dependency:
+    # the sysroot it is built against. ffmpeg compiled against this machine's
+    # own headers instead would ask for this machine's C library.
+    STUB_CONFIGURE_LOG="$work/args" FFMPEG_BUNDLE_TARGET_CFLAGS="$flags" \
+        run_recipe "$work/build" "$log" "$work/out"
+    [ -f "$work/args" ] || fail "configure did not run: $(tail -3 "$work/out")"
+    grep -qxF -- "--extra-cflags=$flags" "$work/args" \
+        || fail "configure was not given the target's flags to compile with: $(cat "$work/args")"
+    # And to link with: configure links test programs, and clang is the linker.
+    grep -qxF -- "--extra-ldflags=$flags" "$work/args" \
+        || fail "configure was not given the target's flags to link with: $(cat "$work/args")"
+    if [ "$(uname)" = "Linux" ]; then
+        grep -qF -- "clang $flags -E" "$log" \
+            || fail "the ALSA check did not ask the compiler with the target's flags: $(grep '^clang' "$log")"
+    fi
+
+    # Without them, configure is given neither: the recipe adds nothing of its own.
+    plain="$(scratch)"; : > "$plain/log"
+    STUB_CONFIGURE_LOG="$plain/args" run_recipe "$plain/build" "$plain/log" "$plain/out"
+    extra="$(grep -E -- '^--extra-(c|ld)flags' "$plain/args")"
+    rm -rf "$plain"
+    [ -z "$extra" ] || fail "configure was given flags nobody asked for: $extra"
+    exit 0
+)
+case_result $? "ffmpeg is compiled and linked with the C flags of the build's target"
+
+if [ "$(uname)" = "Linux" ]; then
+    echo "TEST21901 — a sysroot without the ALSA headers is refused, saying where they were looked for"
+    (
+        work="$(scratch)"; trap 'rm -rf "$work"' EXIT
+        log="$work/log"; : > "$log"
+        flags="--sysroot=$work/sysroot"
+        STUB_CLANG_NO_ALSA=1 STUB_CONFIGURE_LOG="$work/args" FFMPEG_BUNDLE_TARGET_CFLAGS="$flags" \
+            run_recipe "$work/build" "$log" "$work/out" \
+            && fail "a sysroot without ALSA headers was built from"
+        grep -qF "clang $flags cannot include <alsa/asoundlib.h>" "$work/out" \
+            || fail "the refusal does not name the flags it asked with: $(tail -4 "$work/out")"
+        grep -q "the sysroot must hold libasound2-dev" "$work/out" \
+            || fail "the refusal does not say the sysroot is where they are missing: $(tail -4 "$work/out")"
+        # This machine's /usr/include is not where a sysroot build reads them,
+        # so the advice to install them here must not be given.
+        grep -q "sudo apt install" "$work/out" \
+            && fail "the refusal tells this machine to install headers a sysroot build does not read"
+        [ -f "$work/args" ] && fail "configure ran without the ALSA headers"
+        exit 0
+    )
+    case_result $? "a sysroot with no ALSA headers stops the build before configure, naming it"
+fi
 
 echo "TEST9709 — the MSVC recipe compiles as C11, so <stdatomic.h> is usable"
 (

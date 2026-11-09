@@ -400,6 +400,7 @@ fn run_recipe(manifest_dir: &Path, into: &Path) -> Result<(), String> {
         .args(&args)
         .current_dir(manifest_dir)
         .env("FFMPEG_BUNDLE_BUILD_DIR", into)
+        .env("FFMPEG_BUNDLE_TARGET_CFLAGS", target_cflags())
         .output()
         // The PROGRAM, not the script. `Command::output` reports ENOENT about
         // the thing it tried to execute, and naming the script instead turned
@@ -491,7 +492,54 @@ fn build_identity(manifest_dir: &Path) -> String {
         bytes.hash(&mut hasher);
     }
     std::env::var("TARGET").unwrap_or_default().hash(&mut hasher);
+    // The C flags it is compiled and linked with: archives built against one
+    // sysroot are not archives built against another, and reusing a tree built
+    // against the build machine's own C library in a build that targets an
+    // older one links symbols the older one does not have.
+    target_cflags().hash(&mut hasher);
     format!("{:016x}", hasher.finish())
+}
+
+/// The C flags cargo's C builds receive for this target, which ffmpeg is
+/// compiled and linked with too.
+///
+/// Read the way the cc crate reads them, so every C dependency of one binary is
+/// built alike: the first of `CFLAGS_<target>`, `CFLAGS_<target with
+/// underscores>`, `TARGET_CFLAGS` and `CFLAGS` that is set. A build that links
+/// against a sysroot (an older C library than the build machine's) names it
+/// there; were ffmpeg compiled against the build machine's own headers instead,
+/// the binary would ask for that machine's C library, whatever the rest of it
+/// was built for.
+///
+/// The MSVC recipe takes none: its compiler and linker are separate programs
+/// with flags of their own, so flags meant for a C compiler driver cannot be
+/// handed to both. A Windows build that sets them is refused, naming the
+/// variable, rather than built without them.
+fn target_cflags() -> String {
+    let target = std::env::var("TARGET").expect("cargo always sets TARGET for a build script");
+    let names = [
+        format!("CFLAGS_{target}"),
+        format!("CFLAGS_{}", target.replace('-', "_")),
+        "TARGET_CFLAGS".to_string(),
+        "CFLAGS".to_string(),
+    ];
+    for name in &names {
+        println!("cargo:rerun-if-env-changed={name}");
+    }
+    let Some((name, flags)) = names
+        .iter()
+        .find_map(|name| std::env::var(name).ok().map(|flags| (name, flags)))
+    else {
+        return String::new();
+    };
+    if cfg!(target_os = "windows") && !flags.trim().is_empty() {
+        panic!(
+            "ffmpeg-bundle: {name} is set ({flags:?}), and the MSVC recipe does not take \
+             C flags from the environment: cl.exe and link.exe are separate programs, so \
+             flags for a C compiler driver cannot be given to both. Unset {name} for this build."
+        );
+    }
+    flags
 }
 
 /// Verify that a static archive's object members match the host
