@@ -1,6 +1,22 @@
 [build-dependencies]
 cc = "1"
 
+# The build lock: libc for `fcntl`, which lets the recipe inherit the locked
+# file, and `gethostname` for the owner's record.
+[target.'cfg(unix)'.build-dependencies]
+libc = "0.2"
+
+# The build lock: the job that ends the recipe with the build, and the
+# machine's name for the owner's record.
+[target.'cfg(windows)'.build-dependencies.windows-sys]
+features = [
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+]
+version = "0.61"
+
 [dependencies]
 
 [lib]

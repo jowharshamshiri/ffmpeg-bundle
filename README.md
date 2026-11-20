@@ -101,6 +101,38 @@ refuses it unless its SHA-256 is the one in `ffmpeg-source.sha256`, adds the
 flag set, builds, and writes the archives into `dist/`. Moving to another FFmpeg
 release means changing both files together.
 
+### Several builds at once
+
+FFmpeg is built once for each version, recipe, platform and set of C flags,
+into `FFMPEG_BUNDLE_BUILD_DIR` (or cargo's `OUT_DIR` when it is not set), and
+every build that needs that combination afterwards links the same archives.
+Builds that start together, such as one test run building several crates that
+depend on this one, take turns: the first builds FFmpeg, and the rest wait for
+it and then link what it built.
+
+The turn is a lock file in the build directory, `build-<identity>.lock`, held
+through the operating system's file locking. Beside it, `build-<identity>.owner`
+says who holds it:
+
+```text
+pid=48213
+host=build-mac
+started=1795204003
+```
+
+`started` is when it took the lock, in seconds since 1970. A build that is
+waiting is waiting for that process.
+
+A build that is killed releases the lock as it dies, so the next one takes it
+over at once instead of waiting for it; it says, in a cargo warning, whose
+build it took over. FFmpeg's own build counts as part of the build that started
+it: on Linux and macOS it keeps the lock until it ends, even when the build that
+started it was killed first, and on Windows it ends with that build. Either way,
+no second FFmpeg build starts in the same directory while one is still running.
+
+`tests/test-build-lock.sh` runs builds of this crate side by side, with a
+stand-in recipe, to check all of this.
+
 ## Changing what is enabled
 
 `scripts/build-ffmpeg.sh` holds one `./configure` invocation, commented with the

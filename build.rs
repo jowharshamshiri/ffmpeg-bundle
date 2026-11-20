@@ -23,7 +23,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 fn main() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -275,27 +275,14 @@ fn ensure_dist(manifest_dir: &Path) -> PathBuf {
     // a workspace test run drives several target directories in parallel and
     // more than one depends on this crate — and compiling ffmpeg twice into
     // the same place wastes many minutes for a result only one can publish.
-    let lock = build_root.join(format!("lock-{identity}"));
-    let held = acquire(&lock);
-    if !held {
-        // Someone else is building it. Wait for their tree, then use it.
-        if wait_for(&dist) {
-            return dist;
-        }
-        // They died without publishing. Take over rather than fail: the
-        // alternative is a build that cannot proceed until a human removes a
-        // lock directory they never knew existed.
-        println!("cargo:warning=ffmpeg-bundle: taking over a stale build lock at {lock:?}");
-        let _ = std::fs::remove_dir(&lock);
-        if !acquire(&lock) && !wait_for(&dist) {
-            panic!("ffmpeg-bundle: cannot acquire the build lock at {lock:?}");
-        }
-    }
+    // The lock is released when its holder ends, however it ends, so a build
+    // waits only while another one is building (src/build_lock.rs).
+    let lock = BuildLock::acquire(&build_root.join(format!("build-{identity}.lock")));
 
-    // Re-check under the lock: the previous holder may have finished between
-    // our first look and our acquiring it.
+    // Re-check under the lock: the previous holder may have published while
+    // this build waited for it.
     if dist.join("lib").is_dir() {
-        let _ = std::fs::remove_dir(&lock);
+        lock.release();
         return dist;
     }
 
@@ -308,19 +295,19 @@ fn ensure_dist(manifest_dir: &Path) -> PathBuf {
     // retried, and the lock above already guarantees a single writer. Naming
     // it per process would leave a fresh multi-hundred-megabyte copy behind on
     // every attempt.
-    let scratch = build_root.join(format!("scratch-{identity}"));
-    let result = run_recipe(manifest_dir, &scratch);
+    let scratch = build_root.join(format!("build-{identity}"));
+    let result = run_recipe(manifest_dir, &scratch, &lock);
     if result.is_ok() {
         // The recipe writes `dist/` under the directory it is given.
         if std::fs::rename(scratch.join("dist"), &dist).is_err() && !dist.join("lib").is_dir() {
-            let _ = std::fs::remove_dir(&lock);
+            lock.release();
             panic!(
                 "ffmpeg-bundle: cannot publish the built archives to {dist:?} — \
                  the build succeeded but its output could not be moved into place."
             );
         }
     }
-    let _ = std::fs::remove_dir(&lock);
+    lock.release();
     match result {
         Ok(()) => dist,
         Err(message) => panic!("{message}"),
@@ -376,8 +363,8 @@ fn recipe(manifest_dir: &Path) -> (&'static str, Vec<String>, PathBuf) {
     }
 }
 
-/// Run the pinned recipe, with its output directed at `into`.
-fn run_recipe(manifest_dir: &Path, into: &Path) -> Result<(), String> {
+/// Run the pinned recipe, with its output directed at `into`, under `lock`.
+fn run_recipe(manifest_dir: &Path, into: &Path, lock: &BuildLock) -> Result<(), String> {
     let (program, args, script) = recipe(manifest_dir);
     println!(
         "cargo:warning=ffmpeg-bundle: building ffmpeg from source into {into:?} \
@@ -396,6 +383,12 @@ fn run_recipe(manifest_dir: &Path, into: &Path) -> Result<(), String> {
     //
     // So it is captured and carried INTO the error, which is the one string
     // cargo does print.
+    //
+    // The recipe holds the lock with this process: on Unix it inherits the
+    // locked file, and on Windows it runs in a job that ends with this
+    // process. Either way no second recipe starts in `into` while this one
+    // runs, even when this process is killed first.
+    let hold = lock.extend_to_children();
     let produced = std::process::Command::new(program)
         .args(&args)
         .current_dir(manifest_dir)
@@ -413,6 +406,7 @@ fn run_recipe(manifest_dir: &Path, into: &Path) -> Result<(), String> {
                  {program} is what runs the recipe on this platform, and it was not found."
             )
         })?;
+    drop(hold);
     if !produced.status.success() {
         let status = produced.status;
         return Err(format!(
@@ -442,30 +436,7 @@ fn run_recipe(manifest_dir: &Path, into: &Path) -> Result<(), String> {
 
 include!("src/recipe_report.rs");
 
-/// A directory created atomically, held for the duration of a build.
-///
-/// `create_dir` is the primitive: it either creates the directory or reports
-/// that it exists, in one step, on every filesystem worth building on. A lock
-/// file written after a check is not the same thing.
-fn acquire(lock: &Path) -> bool {
-    if let Some(parent) = lock.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    std::fs::create_dir(lock).is_ok()
-}
-
-/// Wait for another builder to publish `dist`. Bounded, because a builder that
-/// died holding the lock must not stall every consumer forever.
-fn wait_for(dist: &Path) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(30 * 60);
-    while Instant::now() < deadline {
-        if dist.join("lib").is_dir() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_secs(2));
-    }
-    false
-}
+include!("src/build_lock.rs");
 
 /// What the output depends on: the pinned version and source, the recipe that
 /// builds it, and the platform it is built for.
