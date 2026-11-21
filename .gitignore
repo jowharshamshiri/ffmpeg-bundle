@@ -25,3 +25,14 @@ target/
 # consumer links against. Per-platform is exactly what the content-addressed
 # cache exists to do.
 dist/
+
+# What older versions of wsb kept under .wsb/: local state, never committed.
+# Everything else under .wsb/ is wsb's committed settings and notes.
+.wsb/wsb.db
+.wsb/state.json
+.wsb/sessions.db*
+.wsb/logs/
+.wsb/workbench.json
+
+# Claude Code's settings for one checkout on one machine.
+.claude/settings.local.json
